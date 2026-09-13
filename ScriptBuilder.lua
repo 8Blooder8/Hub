@@ -7,10 +7,10 @@ local Player    = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
 Builder = {}
-Builder.__index = Builder
+local BUILDER_META = {__index = Builder}
 
 local GUILIB = {}
-GUILIB.__index = GUILIB
+local GUILIB_META = {__index = GUILIB}
 
 local function resolvePath(path)
     if not path or path == "" then return nil end
@@ -113,7 +113,7 @@ local COLORS = {
 }
 
 function GUILIB.New(scriptName, config)
-    local self = setmetatable({}, GUILIB)
+    local self = setmetatable({}, GUILIB_META)
 
     self.ScriptName = scriptName or "Script"
     self.Config     = config or {}
@@ -872,8 +872,10 @@ function GUILIB:Run()
 end
 
 function Builder.New(scriptName, config)
-    local self = setmetatable({}, Builder)
-    self.GuiLib = GUILIB.New(scriptName, config or {})
+    local self = setmetatable({}, BUILDER_META)
+    local guiLib = GUILIB.New(scriptName, config or {})
+    assert(guiLib, "[Builder] GUILIB.New returned nil")
+    self.GuiLib = guiLib
     self.GuiLib._RegisterInternal = true
     return self
 end
