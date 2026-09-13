@@ -1,5 +1,5 @@
 --[[
-    ScriptBuilder.lua â€” Refactored
+    ScriptBuilder.lua — Refactored
     Repository: https://github.com/8Blooder8/Hub
 ]]
 
@@ -150,7 +150,7 @@ local COLORS = {
 }
 
 -- ============================================================
--- SLICE PARSER â€” Cobalt snippet -> structured data
+-- SLICE PARSER — Cobalt snippet -> structured data
 -- ============================================================
 
 local function trim(s)
@@ -523,7 +523,7 @@ function GUILIB:AddModule(moduleDef)
 end
 
 -- ============================================================
--- ADD REMOTE â€” new public API
+-- ADD REMOTE — new public API
 -- ============================================================
 
 function GUILIB:AddRemote(category, name, cobaltSnippet, controlType, controlConfig)
@@ -599,7 +599,7 @@ function GUILIB:AddRemote(category, name, cobaltSnippet, controlType, controlCon
 end
 
 -- ============================================================
--- ADD REMOTE SPY â€” backward compatibility layer
+-- ADD REMOTE SPY — backward compatibility layer
 -- ============================================================
 
 function GUILIB:AddRemoteSpy(category, name, remotePath, arg1, controlType, defaultVal)
@@ -667,7 +667,7 @@ function GUILIB:AddModules(modules)
 end
 
 -- ============================================================
--- MODULE UI â€” static build (called during BuildGui)
+-- MODULE UI — static build (called during BuildGui)
 -- ============================================================
 
 function GUILIB:_buildModuleUI(mod)
@@ -713,7 +713,7 @@ function GUILIB:_buildModuleUI(mod)
     end
 end
 
--- Dynamic add after Run() â€” creates UI and adds to visible content
+-- Dynamic add after Run() — creates UI and adds to visible content
 function GUILIB:_addModuleUIDynamic(mod)
     if not self.Content then return end
 
