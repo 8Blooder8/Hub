@@ -14,6 +14,7 @@ local GUILIB_META = {__index = GUILIB}
 
 local function resolvePath(path)
     if not path or path == "" then return nil end
+    if path:match(":") then return nil end
     local segments = {}
     for part in string.gmatch(path, "[^.]+") do
         segments[#segments + 1] = part
@@ -44,8 +45,7 @@ local function resolveRemote(raw)
     if not raw or raw == "" then return nil end
     local path = raw:gsub("^%s+", ""):gsub("%s+$", "")
     if path == "" then return nil end
-
-    
+    if path:match(":%s*(FireServer|InvokeServer)") then return nil end
     if path:sub(1, 5) == "game:" or path:sub(1, 5) == "game." then
         local ok, result = pcall(function()
             local fn = loadstring("return " .. path)
@@ -57,7 +57,9 @@ local function resolveRemote(raw)
     end
 
     
-    return resolvePath(path)
+    local ok2, pathResult = pcall(resolvePath, path)
+    if ok2 and pathResult then return pathResult end
+    return nil
 end
 
 local function make(className, props)
