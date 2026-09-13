@@ -237,6 +237,7 @@ function Builder:_makeRow(mod, order)
         BorderSizePixel=0,
         LayoutOrder=order,
     })
+    row:SetAttribute("SBContent", true)
     corner(row,4)
     make("TextLabel",{
         Parent=row, BackgroundTransparency=1,
@@ -291,6 +292,14 @@ end
 
 function Builder:_showCategory(category)
     self.ActiveCategory=category
+
+    -- Disconnect all old module-control events before rebuilding category content.
+    for _,mod in pairs(self.Modules) do
+        disconnectAll(mod._connections)
+        mod._connections={}
+        mod.UI={}
+    end
+
     if self.Content then
         for _,c in ipairs(self.Content:GetChildren()) do
             if c:GetAttribute("SBContent") then c:Destroy() end
