@@ -2,6 +2,19 @@
 -- Simple module builder.
 -- A module only needs Name, Category, optional Subcategory, Type, Interval,
 -- optional Params and a Lua Code snippet. No Remote/Args API is required.
+--
+-- Select modules can use:
+--   To = "TargetModule"
+--   Params = {
+--       Options = {
+--           ["Zone 1"] = Vector3.new(0, 5, 0),
+--           ["Zone 2"] = Vector3.new(100, 10, 50),
+--       }
+--   }
+--
+-- The target module then receives:
+--   selected / Selected       -> selected option value
+--   selectedName / SelectedName -> selected option key
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -111,6 +124,50 @@ local function globalEnv()
     return _G
 end
 
+local function arrayLength(t)
+    local count = 0
+    local maxIndex = 0
+    for key in pairs(t or {}) do
+        if type(key) == "number" and key >= 1 and key % 1 == 0 then
+            count += 1
+            if key > maxIndex then maxIndex = key end
+        end
+    end
+    if count == maxIndex then return maxIndex end
+    return 0
+end
+
+local function buildSelectOptions(options)
+    local result = {}
+    if type(options) ~= "table" then
+        return result
+    end
+
+    local length = arrayLength(options)
+    if length > 0 then
+        for index = 1, length do
+            result[#result + 1] = {
+                Name = tostring(options[index]),
+                Value = options[index],
+            }
+        end
+        return result
+    end
+
+    for key, value in pairs(options) do
+        result[#result + 1] = {
+            Name = tostring(key),
+            Value = value,
+        }
+    end
+
+    table.sort(result, function(a, b)
+        return a.Name:lower() < b.Name:lower()
+    end)
+
+    return result
+end
+
 local function executeSnippet(mod, value)
     local code = trim(mod.Code)
     if code == "" then return false, "Code is empty" end
@@ -120,6 +177,9 @@ local function executeSnippet(mod, value)
 
     local fn, compileError = compiler(code)
     if not fn then return false, compileError end
+
+    local selected = mod.Selected
+    local selectedName = mod.SelectedName
 
     local env = {
         game = game,
@@ -145,6 +205,13 @@ local function executeSnippet(mod, value)
         Enabled = mod.Enabled == true,
         params = mod.Params,
         Params = mod.Params,
+
+        selected = selected,
+        Selected = selected,
+        selectedName = selectedName,
+        SelectedName = selectedName,
+        selection = selected,
+        Selection = selected,
     }
 
     if setfenv then
@@ -174,6 +241,7 @@ function Builder.New(name, config)
     self.Visible = false
     self._minimized = false
     self._categoryButtons = {}
+    self._pendingSelects = {}
     return self
 end
 
@@ -253,6 +321,63 @@ function Builder:_setToggleState(mod, state)
     end
 end
 
+function Builder:_applySelection(target, selectedName, selectedValue, source)
+    target.Selected = selectedValue
+    target.SelectedName = selectedName
+    target.Selection = selectedValue
+    target.SelectionName = selectedName
+    target.SelectedBy = source
+    target.Value = selectedValue
+
+    if target.Type:lower() == "toggle" and type(selectedValue) == "boolean" then
+        target.Enabled = selectedValue
+    end
+end
+
+function Builder:_syncSelect(mod)
+    if not mod or (mod.Type:lower() ~= "select" and mod.Type:lower() ~= "dropdown") then
+        return
+    end
+
+    local options = mod._SelectOptions or {}
+    if #options == 0 then
+        mod.SelectedName = nil
+        mod.Selected = nil
+        if mod.To ~= "" then
+            self._pendingSelects[mod.To] = {
+                Name = nil,
+                Value = nil,
+                Source = mod.Name,
+            }
+        end
+        return
+    end
+
+    local selectedIndex = tonumber(mod._SelectIndex) or 1
+    selectedIndex = math.clamp(selectedIndex, 1, #options)
+    mod._SelectIndex = selectedIndex
+
+    local selectedOption = options[selectedIndex]
+    mod.SelectedName = selectedOption.Name
+    mod.Selected = selectedOption.Value
+    mod.Value = selectedOption.Value
+
+    if mod.To ~= "" then
+        local target = self.Modules[mod.To]
+        local pending = {
+            Name = selectedOption.Name,
+            Value = selectedOption.Value,
+            Source = mod.Name,
+        }
+
+        if target then
+            self:_applySelection(target, pending.Name, pending.Value, mod.Name)
+        else
+            self._pendingSelects[mod.To] = pending
+        end
+    end
+end
+
 function Builder:AddModule(def)
     assert(type(def) == "table", "AddModule expects a table")
     assert(def.Name, "AddModule: Name is required")
@@ -292,10 +417,19 @@ function Builder:AddModule(def)
     mod.Interval = tonumber(def.Interval)
     mod.Params = params
     mod.Options = type(params.Options) == "table" and params.Options or {}
+    mod.To = trim(def.To or "")
     mod.Code = tostring(def.Code or "")
     mod.Value = def.Value
     if mod.Value == nil then mod.Value = params.Default end
-    if lowerType == "toggle" then mod.Enabled = def.Enabled == true or params.Default == true else mod.Enabled = false end
+    if lowerType == "toggle" then
+        mod.Enabled = def.Enabled == true or params.Default == true
+    else
+        mod.Enabled = false
+    end
+    mod.Selected = def.Selected
+    mod.SelectedName = def.SelectedName
+    mod.Selection = mod.Selected
+    mod.SelectionName = mod.SelectedName
     mod.UI = {}
     mod._connections = {}
     mod._loopToken = 0
@@ -308,7 +442,24 @@ function Builder:AddModule(def)
         mod.Value = tonumber(mod.Value) or mod.Params.Min
         mod.Value = math.clamp(mod.Value, mod.Params.Min, mod.Params.Max)
     elseif lowerType == "select" or lowerType == "dropdown" then
-        if mod.Value == nil then mod.Value = mod.Options[1] end
+        mod._SelectOptions = buildSelectOptions(mod.Options)
+
+        local defaultName = params.Default
+        local defaultIndex
+
+        if defaultName ~= nil then
+            for index, option in ipairs(mod._SelectOptions) do
+                if option.Name == tostring(defaultName) or option.Value == defaultName then
+                    defaultIndex = index
+                    break
+                end
+            end
+        end
+
+        mod._SelectIndex = defaultIndex or 1
+        mod.SelectedName = nil
+        mod.Selected = nil
+        mod.Value = nil
     end
 
     self.Modules[name] = mod
@@ -317,6 +468,24 @@ function Builder:AddModule(def)
         table.insert(self.Categories, category)
     end
     table.insert(self.CategoryMap[category], mod)
+
+    if self._pendingSelects[name] then
+        local pending = self._pendingSelects[name]
+        self:_applySelection(mod, pending.Name, pending.Value, pending.Source)
+        self._pendingSelects[name] = nil
+    end
+
+    for _, other in pairs(self.Modules) do
+        if other ~= mod
+            and (other.Type:lower() == "select" or other.Type:lower() == "dropdown")
+            and tostring(other.To or "") == name then
+            self:_syncSelect(other)
+        end
+    end
+
+    if lowerType == "select" or lowerType == "dropdown" then
+        self:_syncSelect(mod)
+    end
 
     if mod.Code == "" then warn("[ScriptBuilder] " .. name .. ": Code is empty") end
     if self.Gui then self:BuildGui() end
@@ -451,20 +620,29 @@ function Builder:_makeRow(mod, parent, order)
         render()
 
     elseif typ == "select" or typ == "dropdown" then
+        local options = mod._SelectOptions or {}
+        local selectedOption = options[mod._SelectIndex or 1]
         local box = make("TextButton", {
             Parent=row, Size=UDim2.fromOffset(110,24), Position=UDim2.new(1,-121,0.5,-12),
             BackgroundColor3=COLORS.Selected, BorderSizePixel=0, TextColor3=COLORS.Text,
             Font=Enum.Font.Gotham, TextSize=10, AutoButtonColor=false,
-            Text=tostring(mod.Value or "Select"),
+            Text=tostring(selectedOption and selectedOption.Name or "Select"),
         })
-        corner(box,4); stroke(box,COLORS.Border,1,0.55); mod.UI.Box=box
-        local index=1
-        for i,opt in ipairs(mod.Options) do if opt==mod.Value then index=i break end end
+        corner(box,4)
+        stroke(box,COLORS.Border,1,0.55)
+        mod.UI.Box=box
+
         table.insert(mod._connections,box.MouseButton1Click:Connect(function()
-            if #mod.Options==0 then return end
-            index=index%#mod.Options+1
-            mod.Value=mod.Options[index]
-            box.Text=tostring(mod.Value)
+            if #options==0 then return end
+            mod._SelectIndex=(mod._SelectIndex or 1)%#options+1
+            local option=options[mod._SelectIndex]
+            mod.Value=option.Value
+            mod.SelectedName=option.Name
+            mod.Selected=option.Value
+            mod.SelectionName=option.Name
+            mod.Selection=option.Value
+            box.Text=tostring(option.Name)
+            self:_syncSelect(mod)
             self:_fire(mod,mod.Value)
         end))
 
