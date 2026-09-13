@@ -670,14 +670,17 @@ end
 function GUILIB:_addModuleUIDynamic(mod)
     if not self.Content then return end
 
-    -- Set layout order
     mod._layoutOrder = #self.ModuleList
 
     -- Build the UI (creates container, control, connections)
     self:_buildModuleUI(mod)
 
-    -- Update sidebar counters efficiently
-    self:_refreshSidebarIncremental()
+    -- If this is a brand-new category, rebuild sidebar so the button exists
+    if not self._categoryButtonCache[mod.Category] then
+        self:_refreshSidebar()
+    else
+        self:_refreshSidebarIncremental()
+    end
 
     -- Make visible if its category is active
     local activeCategory = self._activeCategory
@@ -1277,8 +1280,9 @@ function GUILIB:_buildSidebar()
             Size = UDim2.fromOffset(14, 12),
         })
 
+        local cat = category
         btn.MouseButton1Click:Connect(function()
-            self:_showCategory(category)
+            self:_showCategory(cat)
         end)
 
         self._categoryButtonCache[category] = btn
@@ -1395,6 +1399,11 @@ end
 function GUILIB:Run()
     self:Show()
 
+    if self._f7Conn then
+        self._f7Conn:Disconnect()
+        self._f7Conn = nil
+    end
+
     local inputConn
     inputConn = UserInputService.InputBegan:Connect(function(input, processed)
         if processed then return end
@@ -1402,6 +1411,7 @@ function GUILIB:Run()
             self:Toggle()
         end
     end)
+    self._f7Conn = inputConn
 
     self.Gui.Destroying:Connect(function()
         if inputConn then inputConn:Disconnect() end
