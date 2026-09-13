@@ -6,10 +6,45 @@
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
 
 local Player = Players.LocalPlayer
 assert(Player, "ScriptBuilder must run in a LocalScript / executor")
 local PlayerGui = Player:WaitForChild("PlayerGui")
+
+local function getGuiParent()
+    if type(gethui) == "function" then
+        local ok, hiddenGui = pcall(gethui)
+        if ok and hiddenGui then
+            return hiddenGui
+        end
+    end
+
+    local ok, robloxGui = pcall(function()
+        return CoreGui:FindFirstChild("RobloxGui")
+    end)
+    if ok and robloxGui then
+        return robloxGui
+    end
+
+    local okCore, core = pcall(function()
+        return CoreGui
+    end)
+    if okCore and core then
+        return core
+    end
+
+    return PlayerGui
+end
+
+local function protectGui(gui)
+    local protector = rawget(_G, "protectgui")
+        or rawget(_G, "protect_gui")
+        or (syn and syn.protect_gui)
+    if type(protector) == "function" then
+        pcall(protector, gui)
+    end
+end
 
 local Builder = {}
 Builder.__index = Builder
@@ -318,11 +353,8 @@ end
 
 function Builder:_makeRow(mod, parent, order)
     local row = make("Frame", {
-        Parent=parent,
-        Size=UDim2.new(1,0,0,SIZE.Row),
-        BackgroundColor3=COLORS.Row,
-        BorderSizePixel=0,
-        LayoutOrder=order,
+        Parent=parent, Size=UDim2.new(1,0,0,SIZE.Row),
+        BackgroundColor3=COLORS.Row, BorderSizePixel=0, LayoutOrder=order,
     })
     row:SetAttribute("SBContent", true)
     corner(row,5)
@@ -510,9 +542,12 @@ function Builder:BuildGui()
     for _,mod in pairs(self.Modules) do disconnectAll(mod._connections) end
 
     local gui=make("ScreenGui",{
-        Parent=PlayerGui,Name=self.Name.."_UI",ResetOnSpawn=false,IgnoreGuiInset=true,
+        Name=self.Name.."_UI",ResetOnSpawn=false,IgnoreGuiInset=true,
         ZIndexBehavior=Enum.ZIndexBehavior.Sibling,DisplayOrder=9999,
     })
+    protectGui(gui)
+    gui.Parent=getGuiParent()
+
     local root=make("Frame",{
         Parent=gui,Name="Root",Size=UDim2.fromOffset(SIZE.W,SIZE.H),
         Position=UDim2.new(0.5,-SIZE.W/2,0.5,-SIZE.H/2),BackgroundColor3=COLORS.Outer,BorderSizePixel=0,
