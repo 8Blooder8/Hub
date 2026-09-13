@@ -1,5 +1,5 @@
 --[[
-    ScriptBuilder.lua â€” Refactored
+    ScriptBuilder.lua — Refactored
     Repository: https://github.com/8Blooder8/Hub
 ]]
 
@@ -25,7 +25,7 @@ local function resolvePath(path)
     if not path or path == "" then return nil end
     if path:match(":") then return nil end
     local segments = {}
-    for part in string.gmatch(path, "[^.]+") do
+    for part in string.gmatch(path, "[^%.]+") do
         segments[#segments + 1] = part
     end
     if #segments == 0 then return nil end
@@ -56,7 +56,6 @@ local function resolveRemote(expression)
     if path == "" then return nil end
     if path:match(":%s*(FireServer|InvokeServer)") then return nil end
 
-    -- Try direct evaluation (e.g. game:GetService("...").Remotes.X)
     if path:sub(1, 5) == "game:" or path:sub(1, 5) == "game." then
         local ok, result = pcall(function()
             local fn = loadstring("return " .. path)
@@ -94,14 +93,6 @@ local function corner(parent, radius)
     })
 end
 
-local function stroke(parent, color, thickness)
-    return make("UIStroke", {
-        Color = color or Color3.fromRGB(34, 34, 34),
-        Thickness = thickness or 1,
-        Parent = parent,
-    })
-end
-
 local function tweenProperty(obj, props, duration)
     local tween = TweenService:Create(obj, TweenInfo.new(duration or 0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props)
     tween:Play()
@@ -109,32 +100,32 @@ local function tweenProperty(obj, props, duration)
 end
 
 -- ============================================================
--- COLOR PALETTE (design tokens)
+-- DESIGN TOKENS
 -- ============================================================
 
 local COLORS = {
-    Window        = Color3.fromRGB(26, 26, 26),   -- #1A1A1A
-    Header        = Color3.fromRGB(26, 26, 26),   -- #1A1A1A
-    Sidebar       = Color3.fromRGB(26, 26, 26),   -- #1A1A1A
-    Content       = Color3.fromRGB(20, 20, 16),   -- #141410
-    Row           = Color3.fromRGB(34, 34, 34),    -- #222222
-    Divider       = Color3.fromRGB(34, 34, 34),    -- #222222
-    ToggleOn      = Color3.fromRGB(104, 159, 251), -- #689FFB
-    Knob          = Color3.fromRGB(247, 255, 255), -- #F7FFFF
-    TitleText     = Color3.fromRGB(205, 205, 205), -- #CDCDCD
-    ModuleText    = Color3.fromRGB(192, 192, 192), -- #C0C0C0
-    SidebarText   = Color3.fromRGB(166, 166, 166), -- #A6A6A6
-    SecondaryText = Color3.fromRGB(142, 142, 142), -- #8E8E8E
-    Icon          = Color3.fromRGB(110, 167, 232), -- #6EA7E8
-    ButtonBg      = Color3.fromRGB(104, 159, 251), -- #689FFB
-    ButtonText    = Color3.fromRGB(245, 245, 245), -- #F5F5F5
-    InputBg       = Color3.fromRGB(27, 27, 27),    -- #1B1B1B
-    InputBorder   = Color3.fromRGB(42, 42, 42),    -- #2A2A2A
-    InputText     = Color3.fromRGB(189, 189, 189), -- #BDBDBD
+    Window        = Color3.fromRGB(26, 26, 26),
+    Header        = Color3.fromRGB(26, 26, 26),
+    Sidebar       = Color3.fromRGB(26, 26, 26),
+    Content       = Color3.fromRGB(20, 20, 16),
+    Row           = Color3.fromRGB(34, 34, 34),
+    Divider       = Color3.fromRGB(34, 34, 34),
+    ToggleOn      = Color3.fromRGB(104, 159, 251),
+    Knob          = Color3.fromRGB(247, 255, 255),
+    TitleText     = Color3.fromRGB(205, 205, 205),
+    ModuleText    = Color3.fromRGB(192, 192, 192),
+    SidebarText   = Color3.fromRGB(166, 166, 166),
+    SecondaryText = Color3.fromRGB(142, 142, 142),
+    Icon          = Color3.fromRGB(110, 167, 232),
+    ButtonBg      = Color3.fromRGB(104, 159, 251),
+    ButtonText    = Color3.fromRGB(245, 245, 245),
+    InputBg       = Color3.fromRGB(27, 27, 27),
+    InputBorder   = Color3.fromRGB(42, 42, 42),
+    InputText     = Color3.fromRGB(189, 189, 189),
 }
 
 -- ============================================================
--- SLICE PARSER â€” Cobalt snippet -> structured data
+-- SLICE PARSER — Cobalt snippet -> structured data
 -- ============================================================
 
 local function trim(s)
@@ -142,7 +133,7 @@ local function trim(s)
 end
 
 -- Parse a comma-separated argument string, respecting nesting of (), {}, []
--- and string literals. Returns array of trimmed argument strings.
+-- and string literals with escaped quotes.
 local function parseArgumentList(argStr)
     local args = {}
     local depth = 0
@@ -193,11 +184,12 @@ local function parseArgumentList(argStr)
 end
 
 -- Try to convert a string argument to a Lua value.
--- Simple literals: string, number, boolean, nil
--- Complex expressions: return as-is (evaluated later at fire time)
+-- Returns a value or a sentinel table for nil to avoid array holes.
+local NIL_SENTINEL = {Kind = "Nil"}
+
 local function tryParseValue(str)
     str = trim(str)
-    if str == "nil" then return nil end
+    if str == "nil" then return NIL_SENTINEL end
     if str == "true" then return true end
     if str == "false" then return false end
     if str:match("^[+-]?%d+%.?%d*$") then
@@ -211,8 +203,17 @@ local function tryParseValue(str)
     return str
 end
 
+-- Convert sentinel back to actual nil for final args assembly
+local function unwrapArg(v)
+    if type(v) == "table" and v.Kind == "Nil" then
+        return nil
+    end
+    return v
+end
+
 -- Parse a Cobalt snippet and extract structured remote data.
 -- Returns: { RemoteExpression, Method, RemoteType, Args }
+-- Args contain sentinel for nil values to preserve array indices.
 local function parseRemoteSnippet(snippet)
     local result = {
         RemoteExpression = "",
@@ -222,32 +223,35 @@ local function parseRemoteSnippet(snippet)
     }
 
     if not snippet or snippet == "" then
-        return result
+        return false, "empty snippet"
     end
 
     local clean = trim(snippet)
 
     -- Find method call: :FireServer( or :InvokeServer(
-    local methodName, parenStart
+    local methodName
     local m = clean:match(":(FireServer|InvokeServer)%(")
     if m then
         methodName = m
-        parenStart = clean:find(":" .. m .. "%(")
-        if parenStart then
-            parenStart = parenStart + #m + 2  -- position of the opening paren
-        end
     end
 
-    if not methodName or not parenStart then
-        return result
+    if not methodName then
+        return false, "could not find FireServer or InvokeServer call"
     end
 
     result.Method = methodName
     result.RemoteType = (methodName == "InvokeServer") and "Function" or "Event"
 
-    -- Find the closing parenthesis for this call
+    -- Find the position of the method call opening paren
+    local parenPos = clean:find(":" .. methodName .. "%(")
+    if not parenPos then
+        return false, "malformed syntax"
+    end
+
+    local openParen = parenPos + #methodName + 1
     local depth = 1
-    local j = parenStart + 1
+    local j = openParen + 1
+
     while j <= #clean and depth > 0 do
         local c = clean:sub(j, j)
         if c == "(" or c == "[" or c == "{" then
@@ -270,8 +274,12 @@ local function parseRemoteSnippet(snippet)
         j = j + 1
     end
 
+    if depth ~= 0 then
+        return false, "unbalanced parentheses"
+    end
+
     -- Extract the argument string between ( and )
-    local argStr = clean:sub(parenStart + 1, j - 2)
+    local argStr = clean:sub(openParen + 1, j - 2)
     local rawArgs = parseArgumentList(argStr)
 
     -- Convert each argument
@@ -281,40 +289,30 @@ local function parseRemoteSnippet(snippet)
     end
 
     -- Find the object expression before the colon
-    -- parenStart is position of (, colon is at parenStart - #methodName - 1
-    local colonPos = parenStart - #methodName - 1
-    if colonPos and colonPos > 0 then
-        local beforeColon = clean:sub(1, colonPos - 1)
-        local objExpr = trim(beforeColon)
+    local colonPos = parenPos
+    local beforeColon = clean:sub(1, colonPos - 1)
+    local objExpr = trim(beforeColon)
 
-        -- If objExpr is a simple variable (e.g. "Event"), try to find its assignment
-        if objExpr and not objExpr:match("%.") then
-            -- Search for assignment pattern: local/varName = expression
-            local assignmentPattern = "[%a_][%w_]*%s*%=%s*" .. objExpr .. "%s*"
-            -- Try to find "local X = <expr>" or "X = <expr>" where X is our var
-            local varName = objExpr
-            -- Pattern for: local VarName = expression
-            local locPattern = "local%s+" .. varName .. "%s*=%s*(.-)%s*$"
-            -- Pattern for: VarName = expression (end of line)
-            local eqPattern = "^%s*" .. varName .. "%s*=%s*(.-)%s*$"
+    -- If objExpr is a simple variable, try to find its assignment
+    if objExpr and not objExpr:match("%.") then
+        local varName = objExpr
 
-            for line in clean:gmatch("[^\n]+") do
-                local lineTrimmed = line:gsub("%s+$", "")
-                local locMatch = lineTrimmed:match("^%s*local%s+" .. varName .. "%s*=%s*(.-)%s*$")
-                if locMatch then
-                    objExpr = trim(locMatch)
-                    break
-                end
-                local eqMatch = lineTrimmed:match("^" .. varName .. "%s*=%s*(.-)%s*$")
-                if eqMatch then
-                    objExpr = trim(eqMatch)
-                    break
-                end
+        for line in clean:gmatch("[^\n]+") do
+            local lineTrimmed = line:gsub("%s+$", "")
+            local locMatch = lineTrimmed:match("^%s*local%s+" .. varName .. "%s*=%s*(.-)%s*$")
+            if locMatch then
+                objExpr = trim(locMatch)
+                break
+            end
+            local eqMatch = lineTrimmed:match("^" .. varName .. "%s*=%s*(.-)%s*$")
+            if eqMatch then
+                objExpr = trim(eqMatch)
+                break
             end
         end
-
-        result.RemoteExpression = objExpr or ""
     end
+
+    result.RemoteExpression = objExpr or ""
 
     return result
 end
@@ -330,10 +328,10 @@ function GUILIB.New(scriptName, config)
     self.Config     = config or {}
 
     -- Data model: Modules is a MAP, ModuleList is an ordered ARRAY
-    self.Modules    = {}          -- name -> module object
+    self.Modules    = {}          -- name -> final module object
     self.ModuleList = {}          -- ordered array of module objects
     self.Categories = {}          -- ordered array of category names
-    self.CategoryMap = {}         -- category -> ordered array of MODULE OBJECTS
+    self.CategoryMap = {}         -- category -> ordered array of FINAL MODULE OBJECTS
 
     self.Gui        = nil
     self.Root       = nil
@@ -346,6 +344,12 @@ function GUILIB.New(scriptName, config)
     self.StatusLabel    = nil
     self.CloseButton    = nil
     self._closeConn     = {}
+    self._f7Conn        = nil
+    self._sidebarBuilt  = false
+    self._activeCategory = nil
+
+    -- Category button cache for efficient refresh
+    self._categoryButtonCache = {}
 
     return self
 end
@@ -371,7 +375,7 @@ function GUILIB:AddModule(moduleDef)
     local category = moduleDef.Category
     local name     = moduleDef.Name
 
-    -- Duplicate name check
+    -- Duplicate name check: never silently overwrite
     if self.Modules[name] then
         return false, "Module already exists: " .. name
     end
@@ -381,12 +385,12 @@ function GUILIB:AddModule(moduleDef)
         self.Categories[#self.Categories + 1] = category
         self.CategoryMap[category] = {}
     end
-    self.CategoryMap[category][#self.CategoryMap[category] + 1] = moduleDef  -- store object, not name
 
     -- Determine control type and defaults
     local controlType = moduleDef.Control and moduleDef.Control.Type or "toggle"
     local defaultVal = false
     local minVal, maxVal, stepVal = 0, 100, 1
+    local controlConfig = moduleDef.Control or {}
 
     if moduleDef.Control then
         if controlType == "toggle" then
@@ -401,38 +405,67 @@ function GUILIB:AddModule(moduleDef)
         end
     end
 
-    -- Resolve remote if present
-    local remoteRef = nil
-    local remoteType = "Event"
-    local remoteArgs = {}
-    if moduleDef.Remote then
-        remoteType = moduleDef.Remote.Type or "Event"
-        remoteRef = resolveRemote(moduleDef.Remote.Path)
-        if moduleDef.Remote.Args then
-            remoteArgs = moduleDef.Remote.Args
+    -- Validate slider config
+    if controlType == "slider" then
+        if minVal > maxVal then
+            return false, "slider Min > Max"
+        end
+        if controlConfig.Argument and controlConfig.Argument < 1 then
+            return false, "slider Argument must be >= 1"
         end
     end
 
+    -- Validate input Argument
+    if controlType == "input" and controlConfig.Argument and controlConfig.Argument < 1 then
+        return false, "input Argument must be >= 1"
+    end
+
+    -- Resolve remote if present
+    local remoteRef = nil
+    local remoteType = "Event"
+    local remoteMethod = "FireServer"
+    local parsedArgs = {}
+
+    if moduleDef.Remote then
+        remoteType = moduleDef.Remote.Type or "Event"
+        remoteMethod = moduleDef.Remote.Method or "FireServer"
+        remoteRef = resolveRemote(moduleDef.Remote.Path)
+        if moduleDef.Remote.Args then
+            parsedArgs = moduleDef.Remote.Args
+        end
+    end
+
+    -- Build the FINAL module object
     local mod = {
-        Category      = category,
-        Name          = name,
-        ControlType   = controlType,
-        Default       = defaultVal,
-        Min           = minVal,
-        Max           = maxVal,
-        Step          = stepVal,
-        Remote        = remoteRef,
-        RemoteType    = remoteType,
-        RemoteArgs    = remoteArgs,
-        Value         = defaultVal,
-        Enabled       = false,
-        UI            = {},
-        SliderValue   = defaultVal,
-        _connections  = {},
+        Category        = category,
+        Name            = name,
+        ControlType     = controlType,
+        Default         = defaultVal,
+        Min             = minVal,
+        Max             = maxVal,
+        Step            = stepVal,
+        Remote          = remoteRef,
+        RemoteType      = remoteType,
+        RemoteMethod    = remoteMethod,
+        RemoteArgs      = parsedArgs,
+        Value           = defaultVal,
+        SliderValue     = defaultVal,
+        Enabled         = false,
+        UI              = {},
+        _ParsedArgs     = {},  -- will hold parsed args with sentinels preserved
+        _connections    = {},
+        _layoutOrder    = 0,
     }
 
+    -- Copy parsed args preserving sentinels
+    for idx, v in ipairs(parsedArgs) do
+        mod._ParsedArgs[idx] = v
+    end
+
+    -- Store in ALL data structures with the SAME final object reference
     self.Modules[name] = mod
     table.insert(self.ModuleList, mod)
+    table.insert(self.CategoryMap[category], mod)
 
     -- If GUI already built, dynamically add UI
     if self.Content and self._sidebarBuilt then
@@ -443,7 +476,7 @@ function GUILIB:AddModule(moduleDef)
 end
 
 -- ============================================================
--- ADD REMOTE â€” new public API
+-- ADD REMOTE — new public API
 -- ============================================================
 
 function GUILIB:AddRemote(category, name, cobaltSnippet, controlType, controlConfig)
@@ -465,16 +498,16 @@ function GUILIB:AddRemote(category, name, cobaltSnippet, controlType, controlCon
     end
 
     -- Parse the Cobalt snippet
-    local parsed = parseRemoteSnippet(cobaltSnippet)
-    if parsed.RemoteExpression == "" then
-        return false, "could not parse remote expression from snippet"
+    local parsed, parseErr = parseRemoteSnippet(cobaltSnippet)
+    if type(parsed) ~= "table" or parsed.RemoteExpression == "" then
+        return false, parseErr or "could not parse remote expression from snippet"
     end
 
-    -- Resolve the remote expression
+    -- Resolve the remote expression (may be nil if remote doesn't exist)
     local remoteRef = resolveRemote(parsed.RemoteExpression)
 
     -- Build control config table
-    local ctrlTbl = { Type = controlType }
+    local ctrlTbl = {Type = controlType}
     if controlConfig then
         for k, v in pairs(controlConfig) do
             ctrlTbl[k] = v
@@ -486,7 +519,7 @@ function GUILIB:AddRemote(category, name, cobaltSnippet, controlType, controlCon
         ctrlTbl.Min = ctrlTbl.Min or 0
         ctrlTbl.Max = ctrlTbl.Max or 100
         ctrlTbl.Step = ctrlTbl.Step or 1
-        if ctrlTbl.Min and ctrlTbl.Max and ctrlTbl.Min > ctrlTbl.Max then
+        if ctrlTbl.Min > ctrlTbl.Max then
             return false, "slider Min > Max"
         end
         if ctrlTbl.Argument and ctrlTbl.Argument < 1 then
@@ -495,49 +528,60 @@ function GUILIB:AddRemote(category, name, cobaltSnippet, controlType, controlCon
         ctrlTbl.Default = ctrlTbl.Default or ctrlTbl.Min or 0
     end
 
+    if controlType == "input" then
+        if ctrlTbl.Argument and ctrlTbl.Argument < 1 then
+            return false, "input Argument must be >= 1"
+        end
+        ctrlTbl.Default = ctrlTbl.Default or ""
+    end
+
+    -- Build the module definition with all parsed data
     local modDef = {
         Category = category,
         Name     = name,
         Control  = ctrlTbl,
         Remote   = {
-            Type = parsed.RemoteType,
-            Path = parsed.RemoteExpression,
-            Args = parsed.Args,
+            Type   = parsed.RemoteType,
+            Method = parsed.Method,
+            Path   = parsed.RemoteExpression,
+            Args   = parsed.Args,
         },
     }
-
-    -- Store parsed args for dynamic modification (input/slider)
-    modDef._ParsedArgs = parsed.Args
-    modDef._RemoteType = parsed.RemoteType
-    modDef._RemoteMethod = parsed.Method
 
     return self:AddModule(modDef)
 end
 
 -- ============================================================
--- ADD REMOTE SPY â€” backward compatibility layer
+-- ADD REMOTE SPY — backward compatibility layer
 -- ============================================================
 
 function GUILIB:AddRemoteSpy(category, name, remotePath, arg1, controlType, defaultVal)
-    local ref = resolveRemote(remotePath)
+    local ref = nil
     local remoteType = "Event"
-    if ref then
-        if ref:IsA("RemoteFunction") then
-            remoteType = "Function"
-        elseif ref:IsA("RemoteEvent") then
-            remoteType = "Event"
+
+    if remotePath and remotePath ~= "" then
+        ref = resolveRemote(remotePath)
+        if ref then
+            if ref:IsA("RemoteFunction") then
+                remoteType = "Function"
+            elseif ref:IsA("RemoteEvent") then
+                remoteType = "Event"
+            end
         end
     end
 
     local control = controlType or "toggle"
-    local ctrlTbl = { Type = control }
+    local ctrlTbl = {Type = control}
+
     if control == "slider" then
         ctrlTbl.Default = defaultVal or 0
         ctrlTbl.Min = 0
         ctrlTbl.Max = 100
         ctrlTbl.Step = 1
+    elseif control == "input" then
+        ctrlTbl.Default = (defaultVal ~= nil) and defaultVal or ""
     else
-        ctrlTbl.Default = (defaultVal ~= nil) and defaultVal or (control == "input" and "" or false)
+        ctrlTbl.Default = (defaultVal ~= nil) and defaultVal or (control == "toggle" and false or "")
     end
 
     local modDef = {
@@ -547,11 +591,19 @@ function GUILIB:AddRemoteSpy(category, name, remotePath, arg1, controlType, defa
     }
 
     if remotePath and remotePath ~= "" then
+        local args = {}
+        if arg1 ~= nil then
+            args[1] = arg1
+        end
         modDef.Remote = {
             Type  = remoteType,
             Path  = remotePath,
-            Args  = arg1 and {arg1} or {},
+            Args  = args,
+            Method = "FireServer",
         }
+        if remoteType == "Function" then
+            modDef.Remote.Method = "InvokeServer"
+        end
     end
 
     return self:AddModule(modDef)
@@ -568,7 +620,7 @@ function GUILIB:AddModules(modules)
 end
 
 -- ============================================================
--- MODULE UI â€” static build (called during BuildGui)
+-- MODULE UI — static build (called during BuildGui)
 -- ============================================================
 
 function GUILIB:_buildModuleUI(mod)
@@ -614,25 +666,27 @@ function GUILIB:_buildModuleUI(mod)
     end
 end
 
--- Dynamic add after Run() â€” creates UI and adds to visible content
+-- Dynamic add after Run() — creates UI and adds to visible content
 function GUILIB:_addModuleUIDynamic(mod)
     if not self.Content then return end
 
     -- Set layout order
     mod._layoutOrder = #self.ModuleList
 
-    -- Build the UI
+    -- Build the UI (creates container, control, connections)
     self:_buildModuleUI(mod)
 
-    -- Add to category map (it was already added to CategoryMap in AddModule)
-    -- Make it visible if its category is active
+    -- Update sidebar counters efficiently
+    self:_refreshSidebarIncremental()
+
+    -- Make visible if its category is active
     local activeCategory = self._activeCategory
     if activeCategory and mod.Category == activeCategory then
+        mod.UI.Container.Visible = true
+        mod.UI.Container.Parent = self.Content
+        -- Re-sort layout
         self:_refreshVisibleModules()
     end
-
-    -- Update sidebar counters
-    self:_refreshSidebar()
 end
 
 -- ============================================================
@@ -640,20 +694,22 @@ end
 -- ============================================================
 
 function GUILIB:_buildToggle(mod, container)
+    -- Pill track (~29x16)
     local track = make("TextButton", {
         Parent = container,
         BackgroundColor3 = mod.Enabled and COLORS.ToggleOn or COLORS.Divider,
         BorderSizePixel = 0,
-        Size = UDim2.fromOffset(36, 18),
-        Position = UDim2.new(1, -46, 0.5, -9),
-        Text = mod.Enabled and "ON" or "OFF",
+        Size = UDim2.fromOffset(29, 16),
+        Position = UDim2.new(1, -39, 0.5, -8),
+        Text = "",
         TextColor3 = COLORS.Knob,
         Font = Enum.Font.GothamMedium,
         TextSize = 8,
         AutoButtonColor = false,
     })
-    corner(track, 9)
+    corner(track, 8)
 
+    -- Knob (~11x11)
     local knob = make("Frame", {
         Parent = track,
         BackgroundColor3 = COLORS.Knob,
@@ -661,7 +717,7 @@ function GUILIB:_buildToggle(mod, container)
         Size = UDim2.new(0, 11, 0, 11),
         Position = mod.Enabled and UDim2.new(1, -13, 0.5, -5.5) or UDim2.new(0, 1, 0.5, -5.5),
     })
-    corner(knob, 9)
+    corner(knob, 8)
 
     mod.UI.Track = track
     mod.UI.Knob = knob
@@ -673,14 +729,11 @@ function GUILIB:_buildToggle(mod, container)
         self:_onModuleToggle(mod)
     end)
     table.insert(mod._connections, conn)
-
-    self:_updateToggleVisual(mod)
 end
 
 function GUILIB:_updateToggleVisual(mod)
     if not mod.UI.Track then return end
     local on = mod.Enabled
-    mod.UI.Track.Text = on and "ON" or "OFF"
     mod.UI.Track.BackgroundColor3 = on and COLORS.ToggleOn or COLORS.Divider
     if mod.UI.Knob then
         mod.UI.Knob.Position = on and UDim2.new(1, -13, 0.5, -5.5) or UDim2.new(0, 1, 0.5, -5.5)
@@ -688,6 +741,7 @@ function GUILIB:_updateToggleVisual(mod)
 end
 
 function GUILIB:_buildButton(mod, container)
+    -- Button ~36x18
     local btn = make("TextButton", {
         Parent = container,
         BackgroundColor3 = COLORS.ButtonBg,
@@ -696,8 +750,8 @@ function GUILIB:_buildButton(mod, container)
         TextColor3 = COLORS.ButtonText,
         Font = Enum.Font.GothamMedium,
         TextSize = 8,
-        Size = UDim2.fromOffset(44, 18),
-        Position = UDim2.new(1, -54, 0.5, -9),
+        Size = UDim2.fromOffset(36, 18),
+        Position = UDim2.new(1, -46, 0.5, -9),
         AutoButtonColor = false,
     })
     corner(btn, 4)
@@ -786,9 +840,9 @@ function GUILIB:_buildSlider(mod, container)
         knob.Position = UDim2.fromOffset(math.max(px - 5, 0), -2)
         valueLabel.Text = tostring(val)
 
-        -- If this slider controls a specific argument index, update mod._ParsedArgs
+        -- Dynamic argument replacement at explicit index
         local argIdx = mod.Control.Argument
-        if argIdx and argIdx >= 1 and mod._ParsedArgs and mod._ParsedArgs[argIdx] ~= nil then
+        if argIdx and argIdx >= 1 and mod._ParsedArgs then
             mod._ParsedArgs[argIdx] = val
         end
     end
@@ -877,18 +931,18 @@ function GUILIB:_onModuleToggle(mod)
 end
 
 function GUILIB:_onModuleSlider(mod, value)
-    self:_fireRemote(mod, value)
+    self:_fireRemote(mod)
 end
 
 function GUILIB:_onModuleInput(mod, value)
-    self:_fireRemote(mod, value)
+    self:_fireRemote(mod)
 end
 
 -- ============================================================
 -- REMOTE EXECUTION
 -- ============================================================
 
--- Evaluate a single argument string to a Lua value, safely
+-- Evaluate a single argument to a Lua value, safely
 local function evalArg(arg)
     if type(arg) ~= "string" then return arg end
     local fn = loadstring("return " .. arg)
@@ -899,68 +953,71 @@ local function evalArg(arg)
     return arg
 end
 
+-- Build the args table for FireServer/InvokeServer using explicit indices
+-- and sentinel unwrapping. Returns a properly packed table and count.
+local function buildFireArgs(mod, extraArg)
+    local parsedArgs = mod._ParsedArgs
+    local args = {}
+    local maxIdx = 0
+
+    -- Build from parsed args (preserving indices, unwrapping sentinels)
+    if parsedArgs and #parsedArgs > 0 then
+        for i = 1, #parsedArgs do
+            args[i] = unwrapArg(parsedArgs[i])
+            maxIdx = i
+        end
+    elseif #mod.RemoteArgs > 0 then
+        for i = 1, #mod.RemoteArgs do
+            args[i] = unwrapArg(mod.RemoteArgs[i])
+            maxIdx = i
+        end
+    end
+
+    -- Apply dynamic argument replacement at explicit index
+    local argIdx = mod.Control and mod.Control.Argument
+    if argIdx and argIdx >= 1 then
+        local newVal = extraArg
+        if newVal == nil then
+            newVal = mod.Value
+        end
+        if newVal ~= nil then
+            args[argIdx] = newVal
+            if argIdx > maxIdx then
+                maxIdx = argIdx
+            end
+        end
+    end
+
+    -- Return packed args using explicit count for table.unpack range
+    return args, maxIdx
+end
+
 function GUILIB:_fireRemote(mod, extraArg)
     if not mod then return end
 
-    local args = {}
-    local parsedArgs = mod._ParsedArgs
+    local args, argCount = buildFireArgs(mod, extraArg)
 
-    -- Build args: use parsed args (possibly modified by slider/input),
-    -- falling back to original remote args
-    if parsedArgs and #parsedArgs > 0 then
-        for i, v in ipairs(parsedArgs) do
-            args[i] = v
-        end
-    elseif #mod.RemoteArgs > 0 then
-        for i, v in ipairs(mod.RemoteArgs) do
-            args[i] = v
-        end
-    end
-
-    -- Replace nil slots with extraArg, mod.Value, or ""
-    for i = 1, #args do
-        if args[i] == nil then
-            if extraArg ~= nil then
-                args[i] = extraArg
-            elseif mod.Value ~= nil then
-                args[i] = mod.Value
-            else
-                args[i] = ""
-            end
-        end
-    end
-
-    -- Also handle case where RemoteArgs has more entries than parsedArgs
-    if #mod.RemoteArgs > #args then
-        args = {}
-        for i, v in ipairs(mod.RemoteArgs) do
-            args[i] = v
-        end
-        for i = 1, #args do
-            if args[i] == nil then
-                if extraArg ~= nil then
-                    args[i] = extraArg
-                elseif mod.Value ~= nil then
-                    args[i] = mod.Value
-                else
-                    args[i] = ""
-                end
-            end
-        end
-    end
-
-    local methodName = mod._RemoteMethod or "FireServer"
+    local methodName = mod._RemoteMethod or mod.RemoteMethod or "FireServer"
     local remoteType = mod.RemoteType or "Event"
 
-    if remoteType == "Function" or methodName == "InvokeServer" then
+    -- Determine method based on remote type if not explicitly set
+    if not mod._RemoteMethod then
+        if remoteType == "Function" then
+            methodName = "InvokeServer"
+        else
+            methodName = "FireServer"
+        end
+    end
+
+    if methodName == "InvokeServer" or remoteType == "Function" then
         task.spawn(function()
             local ok, result = pcall(function()
                 if mod.Remote and mod.Remote:IsA("RemoteFunction") then
                     local vals = {}
-                    for _, a in ipairs(args) do
-                        vals[#vals + 1] = evalArg(a)
+                    for i = 1, argCount do
+                        vals[i] = evalArg(args[i])
                     end
-                    return mod.Remote:InvokeServer(table.unpack(vals))
+                    return mod.Remote:InvokeServer(table.unpack(vals, 1, argCount))
                 end
             end)
             if ok then
@@ -974,10 +1031,10 @@ function GUILIB:_fireRemote(mod, extraArg)
             local ok, err = pcall(function()
                 if mod.Remote and mod.Remote:IsA("RemoteEvent") then
                     local vals = {}
-                    for _, a in ipairs(args) do
-                        vals[#vals + 1] = evalArg(a)
+                    for i = 1, argCount do
+                        vals[i] = evalArg(args[i])
                     end
-                    mod.Remote:FireServer(table.unpack(vals))
+                    mod.Remote:FireServer(table.unpack(vals, 1, argCount))
                 end
             end)
             if ok then
@@ -1004,7 +1061,7 @@ function GUILIB:BuildGui()
         Parent = PlayerGui,
     })
 
-    -- Main window: ~371x284
+    -- Main window: 371x284
     local root = make("Frame", {
         Parent = self.Gui,
         Size = UDim2.fromOffset(371, 284),
@@ -1017,7 +1074,7 @@ function GUILIB:BuildGui()
     corner(root, 6)
     self.Root = root
 
-    -- Draggable only via header area
+    -- Header: 29px, draggable only via header
     local header = make("Frame", {
         Parent = root,
         Size = UDim2.new(1, 0, 0, 29),
@@ -1026,7 +1083,6 @@ function GUILIB:BuildGui()
         Active = true,
         Draggable = true,
     })
-    corner(root, 6)
 
     local titleLabel = make("TextLabel", {
         Parent = header,
@@ -1040,14 +1096,37 @@ function GUILIB:BuildGui()
         Size = UDim2.new(1, -50, 1, 0),
     })
 
-    -- Close button
+    -- Header icons
+    local icon1 = make("TextLabel", {
+        Parent = header,
+        BackgroundTransparency = 1,
+        Text = "i",
+        TextColor3 = COLORS.Icon,
+        Font = Enum.Font.GothamBold,
+        TextSize = 10,
+        Position = UDim2.new(1, -70, 0.5, -6),
+        Size = UDim2.fromOffset(10, 10),
+    })
+
+    local icon2 = make("TextLabel", {
+        Parent = header,
+        BackgroundTransparency = 1,
+        Text = ">",
+        TextColor3 = COLORS.Icon,
+        Font = Enum.Font.GothamBold,
+        TextSize = 10,
+        Position = UDim2.new(1, -56, 0.5, -6),
+        Size = UDim2.fromOffset(10, 10),
+    })
+
+    -- Close button: x (~14px)
     local closeBtn = make("TextButton", {
         Parent = header,
         Size = UDim2.fromOffset(14, 14),
         Position = UDim2.new(1, -24, 0.5, -7),
         BackgroundColor3 = Color3.fromRGB(40, 40, 40),
         BorderSizePixel = 0,
-        Text = "Ă—",
+        Text = "x",
         TextColor3 = Color3.fromRGB(160, 160, 160),
         Font = Enum.Font.GothamMedium,
         TextSize = 14,
@@ -1060,29 +1139,16 @@ function GUILIB:BuildGui()
     end)
     self._closeConn[#self._closeConn + 1] = closeConn
 
-    -- Header icons (small)
-    local icon1 = make("TextLabel", {
-        Parent = header,
-        BackgroundTransparency = 1,
-        Text = "âšˇ",
-        TextColor3 = COLORS.Icon,
-        Font = Enum.Font.GothamMedium,
-        TextSize = 10,
-        Position = UDim2.new(1, -70, 0.5, -6),
-        Size = UDim2.fromOffset(10, 10),
-    })
-    local icon2 = make("TextLabel", {
-        Parent = header,
-        BackgroundTransparency = 1,
-        Text = "âš™",
-        TextColor3 = COLORS.Icon,
-        Font = Enum.Font.GothamMedium,
-        TextSize = 10,
-        Position = UDim2.new(1, -56, 0.5, -6),
-        Size = UDim2.fromOffset(10, 10),
+    -- Divider under header
+    make("Frame", {
+        Parent = root,
+        Size = UDim2.new(1, 0, 0, 1),
+        Position = UDim2.fromOffset(0, 29),
+        BackgroundColor3 = COLORS.Divider,
+        BorderSizePixel = 0,
     })
 
-    -- Sidebar (~96px)
+    -- Sidebar: ~96px
     local sidebar = make("Frame", {
         Parent = root,
         Size = UDim2.new(0, 96, 1, -29),
@@ -1130,26 +1196,17 @@ function GUILIB:BuildGui()
         PaddingBottom = UDim.new(0, 8),
     })
 
-    -- Status bar
-    local statusBar = make("Frame", {
-        Parent = root,
-        Size = UDim2.new(1, -16, 0, 20),
-        Position = UDim2.fromOffset(8, 255),
-        BackgroundColor3 = Color3.fromRGB(30, 30, 30),
-        BorderSizePixel = 0,
-    })
-    corner(statusBar, 3)
-
+    -- Status label (minimal, inside content area)
     local statusLabel = make("TextLabel", {
-        Parent = statusBar,
+        Parent = content,
         BackgroundTransparency = 1,
         Text = "Ready",
         TextColor3 = COLORS.SecondaryText,
         Font = Enum.Font.Gotham,
         TextSize = 8,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Position = UDim2.fromOffset(6, 0),
-        Size = UDim2.new(1, -12, 1, 0),
+        Size = UDim2.new(1, -14, 0, 14),
+        Visible = false,
     })
     self.StatusLabel = statusLabel
 
@@ -1187,6 +1244,8 @@ function GUILIB:_buildSidebar()
         end
     end
 
+    self._categoryButtonCache = {}
+
     local yOffset = 30
     for _, category in ipairs(self.Categories) do
         local moduleCount = self.CategoryMap[category] and #self.CategoryMap[category] or 0
@@ -1222,7 +1281,23 @@ function GUILIB:_buildSidebar()
             self:_showCategory(category)
         end)
 
+        self._categoryButtonCache[category] = btn
+
         yOffset = yOffset + 30
+    end
+end
+
+function GUILIB:_refreshSidebarIncremental()
+    -- Only update counts for existing category buttons
+    for _, category in ipairs(self.Categories) do
+        local btn = self._categoryButtonCache[category]
+        if btn then
+            local moduleCount = self.CategoryMap[category] and #self.CategoryMap[category] or 0
+            local countLabel = btn:FindFirstChildOfClass("TextLabel")
+            if countLabel then
+                countLabel.Text = tostring(moduleCount)
+            end
+        end
     end
 end
 
@@ -1249,7 +1324,7 @@ function GUILIB:_showCategory(category)
         end
     end
 
-    -- Show modules for this category
+    -- Show modules for this category (containers created once, reused)
     local moduleObjects = self.CategoryMap[category] or {}
     local order = 0
     for _, mod in ipairs(moduleObjects) do
@@ -1268,7 +1343,7 @@ function GUILIB:_showCategory(category)
                 child.BackgroundColor3 = Color3.fromRGB(36, 36, 36)
                 child.TextColor3 = COLORS.ModuleText
             else
-                child.BackgroundColor3 = COLORS.Row or Color3.fromRGB(34, 34, 34)
+                child.BackgroundColor3 = COLORS.Row
                 child.TextColor3 = COLORS.SidebarText
             end
         end
@@ -1292,14 +1367,14 @@ function GUILIB:Show()
     end
     self.Gui.Enabled = true
     if self.Root then
-        tweenProperty(self.Root, { BackgroundTransparency = 0 }, 0.15)
+        tweenProperty(self.Root, {BackgroundTransparency = 0}, 0.15)
     end
     self.Visible = true
 end
 
 function GUILIB:Hide()
     if self.Root then
-        tweenProperty(self.Root, { BackgroundTransparency = 1 }, 0.15)
+        tweenProperty(self.Root, {BackgroundTransparency = 1}, 0.15)
     end
     task.delay(0.2, function()
         if self.Gui then
@@ -1408,6 +1483,7 @@ end
 function Builder:Status(text)
     if self.GuiLib and self.GuiLib.StatusLabel then
         self.GuiLib.StatusLabel.Text = tostring(text)
+        self.GuiLib.StatusLabel.Visible = true
     end
     if self.GuiLib then
         self.GuiLib.StatusText = tostring(text)
@@ -1420,15 +1496,8 @@ function Builder.Init(scriptName, config)
     local globalName = "_SB_" .. scriptName:gsub("%W", "_")
     _G[globalName] = instance
 
-    local conn
-    conn = UserInputService.InputBegan:Connect(function(input, processed)
-        if processed then return end
-        if input.KeyCode == Enum.KeyCode.F7 then
-            instance:Toggle()
-        end
-    end)
-
-    instance._F7Conn = conn
+    -- F7 handler is set up in Run(), not here
+    -- This avoids duplicate F7 handlers when both Init and Run are called
 
     return instance, globalName
 end
