@@ -1,5 +1,5 @@
 --[[
-    ScriptBuilder.lua — Refactored
+    ScriptBuilder.lua â€” Refactored
     Repository: https://github.com/8Blooder8/Hub
 ]]
 
@@ -125,7 +125,7 @@ local COLORS = {
 }
 
 -- ============================================================
--- SLICE PARSER — Cobalt snippet -> structured data
+-- SLICE PARSER â€” Cobalt snippet -> structured data
 -- ============================================================
 
 local function trim(s)
@@ -295,10 +295,10 @@ local function parseRemoteSnippet(snippet)
     end
 
     -- Extract ONLY the object expression immediately before ":"
-    -- Take the last line of text before the colon, not everything before it
+    -- Take the last segment after ; (or last line) before the colon
     local beforeColon = clean:sub(1, parenPos - 1)
-    local lastLine = beforeColon:match("[^\n]*$") or trim(beforeColon)
-    local objExpr = trim(lastLine)
+    local lastSegment = beforeColon:match("[^;]+$") or trim(beforeColon)
+    local objExpr = trim(lastSegment)
 
     -- If objExpr is a simple identifier (no dots), try to find its assignment
     if objExpr and not objExpr:match("%.") then
@@ -483,7 +483,7 @@ function GUILIB:AddModule(moduleDef)
 end
 
 -- ============================================================
--- ADD REMOTE — new public API
+-- ADD REMOTE â€” new public API
 -- ============================================================
 
 function GUILIB:AddRemote(category, name, cobaltSnippet, controlType, controlConfig)
@@ -559,7 +559,7 @@ function GUILIB:AddRemote(category, name, cobaltSnippet, controlType, controlCon
 end
 
 -- ============================================================
--- ADD REMOTE SPY — backward compatibility layer
+-- ADD REMOTE SPY â€” backward compatibility layer
 -- ============================================================
 
 function GUILIB:AddRemoteSpy(category, name, remotePath, arg1, controlType, defaultVal)
@@ -627,7 +627,7 @@ function GUILIB:AddModules(modules)
 end
 
 -- ============================================================
--- MODULE UI — static build (called during BuildGui)
+-- MODULE UI â€” static build (called during BuildGui)
 -- ============================================================
 
 function GUILIB:_buildModuleUI(mod)
@@ -673,7 +673,7 @@ function GUILIB:_buildModuleUI(mod)
     end
 end
 
--- Dynamic add after Run() — creates UI and adds to visible content
+-- Dynamic add after Run() â€” creates UI and adds to visible content
 function GUILIB:_addModuleUIDynamic(mod)
     if not self.Content then return end
 
