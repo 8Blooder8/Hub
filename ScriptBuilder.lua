@@ -295,10 +295,18 @@ local function parseRemoteSnippet(snippet)
     end
 
     -- Extract ONLY the object expression immediately before ":"
-    -- Take the last segment after ; (or last line) before the colon
+    -- Find the last non-empty line/segment before the colon
     local beforeColon = clean:sub(1, parenPos - 1)
-    local lastSegment = beforeColon:match("[^;]+$") or trim(beforeColon)
-    local objExpr = trim(lastSegment)
+    -- Normalize semicolons to newlines for unified splitting
+    local normalized = beforeColon:gsub(";", "\n")
+    local objExpr = ""
+    for line in normalized:gmatch("[^\n]+") do
+        local trimmed = trim(line)
+        if trimmed ~= "" then
+            objExpr = trimmed
+        end
+    end
+    if objExpr == "" then objExpr = trim(beforeColon) end
 
     -- If objExpr is a simple identifier (no dots), try to find its assignment
     if objExpr and not objExpr:match("%.") then
