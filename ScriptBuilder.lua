@@ -8,6 +8,13 @@ local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local UserInputService    = game:GetService("UserInputService")
 local TweenService        = game:GetService("TweenService")
 
+local typeof = function(v)
+    if type(v) == "table" and v.ClassName then
+        return "Instance"
+    end
+    return type(v)
+end
+
 local Player    = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
@@ -57,6 +64,24 @@ local function resolveRemote(expression)
     if path:match(":%s*FireServer") or path:match(":%s*InvokeServer") then return nil end
 
     if path:sub(1, 5) == "game:" or path:sub(1, 5) == "game." then
+        local serviceMatch = path:match("game:GetService%(\"%w+\"%)%.(.*)")
+        if serviceMatch then
+            local serviceName = path:match("game:GetService%(\"%w+\"%)")
+            if serviceName then
+                serviceName = serviceName:match('"([^"]+)"') or serviceName:match("'([^']+)'")
+            end
+            local service = game:GetService(serviceName or "ReplicatedStorage")
+            if service then
+                local node = service
+                for segment in serviceMatch:gmatch("[^%.]+") do
+                    node = node:FindFirstChild(segment)
+                    if not node then break end
+                end
+                if node and typeof(node) == "Instance" then
+                    return node
+                end
+            end
+        end
         local ok, result = pcall(function()
             local fn = loadstring("return " .. path)
             if fn then return fn() end
@@ -231,9 +256,10 @@ local function parseRemoteSnippet(snippet)
     -- Find method call: :FireServer( or :InvokeServer(
     -- Allow optional whitespace between method name and "("
     local methodName
-    local m = clean:match(":FireServer%s*%(") or clean:match(":InvokeServer%s*%(")
-    if m then
-        methodName = m
+    if clean:match(":FireServer%s*%(") then
+        methodName = "FireServer"
+    elseif clean:match(":InvokeServer%s*%(") then
+        methodName = "InvokeServer"
     end
 
     if not methodName then
@@ -314,6 +340,11 @@ local function parseRemoteSnippet(snippet)
 
         for line in clean:gmatch("[^\n]+") do
             local lineTrimmed = line:gsub("%s+$", "")
+            -- Strip everything after ; for semicolon-separated lines
+            local semicolonPos = lineTrimmed:find(";")
+            if semicolonPos then
+                lineTrimmed = lineTrimmed:sub(1, semicolonPos - 1)
+            end
             local locMatch = lineTrimmed:match("^%s*local%s+" .. varName .. "%s*=%s*(.-)%s*$")
             if locMatch then
                 objExpr = trim(locMatch)
@@ -460,6 +491,7 @@ function GUILIB:AddModule(moduleDef)
         Max             = maxVal,
         Step            = stepVal,
         Remote          = remoteRef,
+        RemoteExpression = moduleDef.Remote.Path,
         RemoteType      = remoteType,
         RemoteMethod    = remoteMethod,
         RemoteArgs      = parsedArgs,
@@ -1525,6 +1557,10 @@ function Builder.Init(scriptName, config)
     -- This avoids duplicate F7 handlers when both Init and Run are called
 
     return instance, globalName
+end
+
+function Builder:BuildGui()
+    return self.GuiLib:BuildGui()
 end
 
 _G.Builder = Builder
