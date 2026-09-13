@@ -143,6 +143,31 @@ function Builder:AddModule(def)
     local control = def.Control or {Type=def.Type or "Toggle"}
     if type(control)=="string" then control={Type=control} end
 
+    -- Replace an existing module with the same name instead of appending
+    -- another entry to CategoryMap. This makes AddModule idempotent by name.
+    local old = self.Modules[name]
+    if old then
+        disconnectAll(old._connections)
+
+        local oldList = self.CategoryMap[old.Category]
+        if oldList then
+            for i = #oldList, 1, -1 do
+                if oldList[i] == old then
+                    table.remove(oldList, i)
+                end
+            end
+
+            if #oldList == 0 then
+                self.CategoryMap[old.Category] = nil
+                for i = #self.Categories, 1, -1 do
+                    if self.Categories[i] == old.Category then
+                        table.remove(self.Categories, i)
+                    end
+                end
+            end
+        end
+    end
+
     local mod = {}
     for k,v in pairs(def) do mod[k]=v end
     mod.Name = name
@@ -178,14 +203,16 @@ function Builder:RemoveModule(name)
     if not mod then return false end
     disconnectAll(mod._connections)
     self.Modules[name]=nil
-    local list = self.CategoryMap[mod.Category]
+    local list=self.CategoryMap[mod.Category]
     if list then
-        for i,v in ipairs(list) do
-            if v==mod then table.remove(list,i) break end
+        for i=#list,1,-1 do
+            if list[i]==mod then table.remove(list,i) end
         end
         if #list==0 then
             self.CategoryMap[mod.Category]=nil
-            for i,v in ipairs(self.Categories) do if v==mod.Category then table.remove(self.Categories,i) break end end
+            for i=#self.Categories,1,-1 do
+                if self.Categories[i]==mod.Category then table.remove(self.Categories,i) end
+            end
         end
     end
     if self.Gui then self:BuildGui() end
@@ -293,7 +320,6 @@ end
 function Builder:_showCategory(category)
     self.ActiveCategory=category
 
-    -- Disconnect all old module-control events before rebuilding category content.
     for _,mod in pairs(self.Modules) do
         disconnectAll(mod._connections)
         mod._connections={}
@@ -308,9 +334,18 @@ function Builder:_showCategory(category)
 
     local label=make("TextLabel",{Parent=self.Content,Size=UDim2.new(1,0,0,17),BackgroundTransparency=1,Text=self.Config.SectionLabels and self.Config.SectionLabels[category] or "Settings",TextColor3=COLORS.Text3,Font=Enum.Font.GothamMedium,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=0})
     label:SetAttribute("SBContent",true)
+
+    -- Render each module name only once, even if an old/stale duplicate
+    -- somehow exists in CategoryMap from an older script instance.
     local list=self.CategoryMap[category] or {}
-    for i,mod in ipairs(list) do
-        self:_makeRow(mod,i)
+    local seen={}
+    local order=1
+    for _,mod in ipairs(list) do
+        if mod and not seen[mod.Name] then
+            seen[mod.Name]=true
+            self:_makeRow(mod,order)
+            order=order+1
+        end
     end
 end
 
