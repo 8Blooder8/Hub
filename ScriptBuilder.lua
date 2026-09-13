@@ -1,45 +1,3 @@
---[[
-    ScriptBuilder - Universal automation GUI builder
-    ================================================
-
-    A self-contained base for building Roblox automation scripts.
-    Register modules by category and function name; the GUI builds itself.
-
-    USAGE:
-        local Builder = loadstring(game:HttpGet(...))()  -- or paste inline
-        Builder.Init("MyScriptName")
-
-        Builder.AddModule({
-            Category  = "Autofarms",
-            Name      = "Auto Collect",
-            Remote    = {
-                Type  = "Event",         -- "Event" (FireServer) or "Function" (InvokeServer)
-                Path  = "ReplicatedStorage.Paper.Remotes.__remoteevent",
-                Args  = {"Collect Egg", nil},  -- nil = dynamic (e.g. from input field)
-            },
-            Control = {
-                Type     = "toggle",    -- "toggle" | "button" | "slider" | "input"
-                Default  = false,       -- toggle default / slider min / button: ignore
-                Min      = 0,           -- slider only
-                Max      = 100,         -- slider only
-                Step     = 1,           -- slider only
-            },
-        })
-
-        Builder.AddModule({ ... })  -- as many as you want
-        Builder.Run()               -- show GUI
-
-    CONTROL TYPES:
-        toggle   -- ON/OFF switch (blue ON, dark OFF)
-        button   -- fires remote once per click
-        slider   -- adjusts numeric value (sends on release)
-        input    -- text field (for UUIDs, codes, etc.)
-
-    HOTKEYS:
-        F7 = show/hide GUI
-        F8 = toggle all modules on/off
-]]
-
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local UserInputService    = game:GetService("UserInputService")
@@ -48,23 +6,11 @@ local TweenService        = game:GetService("TweenService")
 local Player    = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
--- ================================================================
--- Builder
--- ================================================================
-
 local Builder = {}
 Builder.__index = Builder
 
 local GUILIB = {}
 GUILIB.__index = GUILIB
-
--- ---------------------------------------------------------------
--- Utility helpers
--- ---------------------------------------------------------------
-
--- ================================================================
--- Resolvers
--- ================================================================
 
 local function resolvePath(path)
     if not path or path == "" then return nil end
@@ -94,21 +40,12 @@ local function resolvePath(path)
     return node
 end
 
--- Resolves a remote path from RemoteSpy 2.3.0 (and manual entry).
--- Accepts THREE formats:
---   1. RemoteSpy "Copy Remote" / "Copy Lua Path":
---        game:GetService("ReplicatedStorage"):WaitForChild("Paper")...
---   2. RemoteSpy "Copy Path" / FullName:
---        game.ReplicatedStorage.Paper.Remotes.__remoteevent
---   3. Dot-path (simple, no "game." prefix):
---        ReplicatedStorage.Paper.Remotes.__remoteevent
--- Returns the Instance or nil. Never errors.
 local function resolveRemote(raw)
     if not raw or raw == "" then return nil end
     local path = raw:gsub("^%s+", ""):gsub("%s+$", "")
     if path == "" then return nil end
 
-    -- Format 1 & 2: Lua expression starting with game: or game.
+    
     if path:sub(1, 5) == "game:" or path:sub(1, 5) == "game." then
         local ok, result = pcall(function()
             local fn = loadstring("return " .. path)
@@ -119,7 +56,7 @@ local function resolveRemote(raw)
         end
     end
 
-    -- Format 3: Dot-path (e.g. ReplicatedStorage.Paper.Remotes.__remoteevent)
+    
     return resolvePath(path)
 end
 
@@ -159,10 +96,6 @@ local function tweenProperty(obj, props, duration)
     return tween
 end
 
--- ---------------------------------------------------------------
--- Colors (matches user's existing theme)
--- ---------------------------------------------------------------
-
 local COLORS = {
     BG         = Color3.fromRGB(13, 15, 18),
     PANEL      = Color3.fromRGB(21, 24, 29),
@@ -179,20 +112,16 @@ local COLORS = {
     DANGER     = Color3.fromRGB(255, 106, 106),
 }
 
--- ================================================================
--- GUI Builder (internal)
--- ================================================================
-
 function GUILIB.New(scriptName, config)
     local self = setmetatable({}, GUILIB)
 
     self.ScriptName = scriptName or "Script"
     self.Config     = config or {}
 
-    self.Modules    = {}      -- registered module definitions
-    self.ModuleState = {}     -- runtime state per module: { value, enabled, ... }
-    self.Categories = {}      -- ordered list of category names
-    self.CategoryMap = {}     -- category name -> list of module names
+    self.Modules    = {}      
+    self.ModuleState = {}     
+    self.Categories = {}      
+    self.CategoryMap = {}     
 
     self.Gui        = nil
     self.Root        = nil
@@ -204,10 +133,6 @@ function GUILIB.New(scriptName, config)
 
     return self
 end
-
--- ---------------------------------------------------------------
--- Module Registration
--- ---------------------------------------------------------------
 
 function GUILIB:AddModule(moduleDef)
     if not moduleDef or not moduleDef.Category or not moduleDef.Name then
@@ -273,17 +198,13 @@ function GUILIB:AddModule(moduleDef)
 
     self.Modules[name] = mod
 
-    -- Build UI if GUI already exists (lazy build if not)
+    
     if self.Content then
         self:_buildModuleUI(mod)
     end
 
     return true
 end
-
--- ---------------------------------------------------------------
--- Build module UI element
--- ---------------------------------------------------------------
 
 function GUILIB:_buildModuleUI(mod)
     if not self.Content then return end
@@ -298,7 +219,7 @@ function GUILIB:_buildModuleUI(mod)
     })
     corner(container, 7)
 
-    -- Label
+    
     local label = make("TextLabel", {
         Parent = container,
         BackgroundTransparency = 1,
@@ -311,7 +232,7 @@ function GUILIB:_buildModuleUI(mod)
         Size = UDim2.new(1, -100, 0, 20),
     })
 
-    -- Status sublabel
+    
     local sublabel = make("TextLabel", {
         Parent = container,
         BackgroundTransparency = 1,
@@ -453,17 +374,17 @@ function GUILIB:_buildSlider(mod, container)
     mod.UI.SliderKnob  = knob
     mod.UI.SliderValue = valueLabel
 
-    -- Clamp helper (math.clamp is not available in standard Lua)
+    
     local function clampNum(v, lo, hi)
         if v < lo then return lo end
         if v > hi then return hi end
         return v
     end
 
-    -- Current slider value (module-level so event handlers can read it)
+    
     mod.SliderValue = mod.Default
 
-    -- Drag interaction
+    
     local dragging = false
     local UIS = UserInputService
 
@@ -506,7 +427,7 @@ function GUILIB:_buildSlider(mod, container)
         end
     end)
 
-    -- Set initial visual position after layout settles
+    
     task.defer(function()
         local absSize = sliderFrame.AbsoluteSize.X
         if absSize and absSize > 0 then
@@ -546,10 +467,6 @@ function GUILIB:_buildInput(mod, container)
     end)
 end
 
--- ---------------------------------------------------------------
--- Module Event Handlers
--- ---------------------------------------------------------------
-
 function GUILIB:_onModuleToggle(mod)
     if mod.Enabled then
         self:_fireRemote(mod)
@@ -564,10 +481,6 @@ function GUILIB:_onModuleInput(mod, value)
     self:_fireRemote(mod, value)
 end
 
--- ---------------------------------------------------------------
--- Remote Execution
--- ---------------------------------------------------------------
-
 function GUILIB:_fireRemote(mod, extraArg)
     if not mod.Remote then
         self.StatusText = mod.Name .. ": no remote set"
@@ -577,7 +490,7 @@ function GUILIB:_fireRemote(mod, extraArg)
     local args = {}
     for i, v in ipairs(mod.RemoteArgs) do
         if v == nil then
-            -- Dynamic placeholder: use extraArg or current value
+            
             if extraArg ~= nil then
                 args[i] = extraArg
             elseif mod.Value ~= nil then
@@ -605,7 +518,7 @@ function GUILIB:_fireRemote(mod, extraArg)
             end
         end)
     else
-        -- Event (FireServer)
+        
         task.spawn(function()
             local ok = pcall(function()
                 if mod.Remote:IsA("RemoteEvent") then
@@ -621,12 +534,8 @@ function GUILIB:_fireRemote(mod, extraArg)
     end
 end
 
--- ---------------------------------------------------------------
--- GUI Construction
--- ---------------------------------------------------------------
-
 function GUILIB:BuildGui()
-    -- Cleanup old instance
+    
     local old = PlayerGui:FindFirstChild(self.ScriptName .. "Builder")
     if old then old:Destroy() end
 
@@ -650,7 +559,7 @@ function GUILIB:BuildGui()
     stroke(root)
     self.Root = root
 
-    -- Title bar
+    
     local titleBar = make("Frame", {
         Parent = root,
         Size = UDim2.new(1, 0, 0, 38),
@@ -715,7 +624,7 @@ function GUILIB:BuildGui()
         self:Hide()
     end)
 
-    -- Hidden registry for module containers (preserves them across category switches)
+    
     local registry = make("Frame", {
         Parent = root,
         Size = UDim2.fromOffset(0, 0, 0, 0),
@@ -725,7 +634,7 @@ function GUILIB:BuildGui()
     })
     self.ModuleRegistry = registry
 
-    -- Sidebar (categories)
+    
     local sidebar = make("Frame", {
         Parent = root,
         Size = UDim2.new(0, 130, 1, -46),
@@ -748,7 +657,7 @@ function GUILIB:BuildGui()
         Size = UDim2.new(1, -20, 0, 16),
     })
 
-    -- Content area
+    
     local content = make("ScrollingFrame", {
         Parent = root,
         Size = UDim2.new(1, -156, 1, -46),
@@ -776,12 +685,12 @@ function GUILIB:BuildGui()
         PaddingBottom = UDim.new(0, 6),
     })
 
-    -- Lazy build all module UIs (AddModule may have been called before GUI existed)
+    
     for _, mod in ipairs(self.Modules) do
         self:_buildModuleUI(mod)
     end
 
-    -- Status bar
+    
     local statusBar = make("Frame", {
         Parent = root,
         Size = UDim2.new(1, -16, 0, 26),
@@ -804,7 +713,7 @@ function GUILIB:BuildGui()
     })
     self.StatusLabel = statusLabel
 
-    -- Build category tabs and initial content
+    
     self:_buildSidebar()
     self:_showCategory(self.Categories[1])
 
@@ -812,7 +721,7 @@ function GUILIB:BuildGui()
 end
 
 function GUILIB:_buildSidebar()
-    -- Remove old buttons
+    
     for _, child in ipairs(self.Sidebar:GetChildren()) do
         if child:IsA("TextButton") then
             child:Destroy()
@@ -858,14 +767,14 @@ function GUILIB:_buildSidebar()
 end
 
 function GUILIB:_showCategory(category)
-    -- Return all module containers to registry, then place active category into content
+    
     for _, child in ipairs(self.Content:GetChildren()) do
         if not child:IsA("UIListLayout") and not child:IsA("UIPadding") then
             child.Parent = self.ModuleRegistry
         end
     end
 
-    -- Update sidebar active state
+    
     for _, child in ipairs(self.Sidebar:GetChildren()) do
         if child:IsA("TextButton") then
             if child.Text == category then
@@ -878,7 +787,7 @@ function GUILIB:_showCategory(category)
         end
     end
 
-    -- Place modules for this category
+    
     local moduleNames = self.CategoryMap[category] or {}
     local order = 0
     for _, name in ipairs(moduleNames) do
@@ -893,10 +802,6 @@ function GUILIB:_showCategory(category)
 
     self.StatusText = "Category: " .. category
 end
-
--- ---------------------------------------------------------------
--- Show / Hide
--- ---------------------------------------------------------------
 
 function GUILIB:Show()
     if not self.Gui then
@@ -929,14 +834,10 @@ function GUILIB:Toggle()
     end
 end
 
--- ---------------------------------------------------------------
--- Run (initialization)
--- ---------------------------------------------------------------
-
 function GUILIB:Run()
     self:Show()
 
-    -- F7 toggle GUI
+    
     local inputConn
     inputConn = UserInputService.InputBegan:Connect(function(input, processed)
         if processed then return end
@@ -951,7 +852,7 @@ function GUILIB:Run()
                     self:_updateToggleVisual(mod)
                 end
             end
-            -- Update all-toggle button text
+            
             if self.Root then
                 for _, child in ipairs(self.Root:GetDescendants()) do
                     if child:IsA("TextButton") and child.Text:sub(1, 4) == "All:" then
@@ -964,15 +865,11 @@ function GUILIB:Run()
         end
     end)
 
-    -- Cleanup on destroy
+    
     self.Gui.Destroying:Connect(function()
         if inputConn then inputConn:Disconnect() end
     end)
 end
-
--- ================================================================
--- Public Builder API
--- ================================================================
 
 function Builder.New(scriptName, config)
     local self = setmetatable({}, Builder)
@@ -984,20 +881,6 @@ end
 function Builder:AddModule(moduleDef)
     return self.GuiLib:AddModule(moduleDef)
 end
-
--- ============================================================
--- RemoteSpy shortcut
--- ============================================================
--- Paste a RemoteSpy "Copy Remote" expression directly.
--- Automatically detects Event vs Function from the instance.
--- Control: "toggle" | "button" | "slider" | "input" (default "toggle")
--- Default: initial value (false for toggle, 0 for slider, "" for input)
--- Example:
---   script:AddRemoteSpy("Autofarms", "Auto Collect",
---       'game:GetService("ReplicatedStorage"):WaitForChild("Paper")...',
---       "Collect Egg",   -- first arg (nil = dynamic)
---       "toggle", false)
--- ============================================================
 
 function Builder:AddRemoteSpy(category, name, remotePath, arg1, controlType, defaultVal)
     local ref = resolveRemote(remotePath)
@@ -1097,18 +980,14 @@ function Builder:Status(text)
     end
 end
 
--- ================================================================
--- Init shortcut (auto-creates Builder and hooks into _G)
--- ================================================================
-
 function Builder.Init(scriptName, config)
     local instance = Builder.New(scriptName, config)
 
-    -- Also store globally so it can be accessed from other scripts
+    
     local globalName = "_SB_" .. scriptName:gsub("%W", "_")
     _G[globalName] = instance
 
-    -- F7 toggles the GUI on first run too
+    
     local conn
     conn = UserInputService.InputBegan:Connect(function(input, processed)
         if processed then return end
