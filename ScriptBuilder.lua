@@ -4,6 +4,11 @@
 --   Subcategory = "Settings"
 --   Interval = 1.0 -- seconds; only applies to Toggle controls
 --
+-- Remote strings can be normal paths or Lua expressions, for example:
+--   Remote = "ReplicatedStorage.Remotes.SomeRemote"
+--   Remote = "ReplicatedStorage.Remotes:GetChildren()[70]"
+--   Remote = 'game:GetService("ReplicatedStorage").Remotes:GetChildren()[70]'
+--
 -- Modules without Subcategory are rendered last and have no section label.
 -- Toggle modules with Interval get an independent task loop. Multiple
 -- interval toggles can therefore run concurrently without sharing a loop.
@@ -62,57 +67,122 @@ local function trim(s)
     return tostring(s or ""):match("^%s*(.-)%s*$") or ""
 end
 
+local function rewriteExpression(expr)
+    expr=trim(expr)
+
+    -- loadstring executes in its own environment, so locals such as
+    -- ReplicatedStorage from this script are NOT visible there. Convert
+    -- common Roblox service aliases into global-safe expressions first.
+    local aliases={
+        ReplicatedStorage='game:GetService("ReplicatedStorage")',
+        Players='game:GetService("Players")',
+        Workspace="workspace",
+        workspace="workspace",
+    }
+
+    for alias,replacement in pairs(aliases) do
+        local escaped=alias:gsub("([^%w])","%%%1")
+        expr=expr:gsub("^"..escaped.."%.",replacement..".")
+    end
+
+    return expr
+end
+
 local function evalExpression(expr)
-    if type(expr)~="string" or trim(expr)=="" then return nil end
+    if type(expr)~="string" or trim(expr)=="" then
+        return nil
+    end
+
+    expr=rewriteExpression(expr)
+
     local fn,compileError=loadstring("return "..expr)
-    if not fn then return nil,compileError end
+    if not fn then
+        return nil,compileError
+    end
+
     local ok,result=pcall(fn)
-    if ok then return result end
+    if ok then
+        return result
+    end
+
     return nil,result
 end
 
 local function resolve(path)
     path=trim(path)
     if path=="" then return nil end
-    local roots={game=game,ReplicatedStorage=ReplicatedStorage,Players=Players,Workspace=workspace}
+
+    local roots={
+        game=game,
+        ReplicatedStorage=ReplicatedStorage,
+        Players=Players,
+        Workspace=workspace,
+        workspace=workspace,
+    }
+
     local parts={}
-    for p in path:gmatch("[^%.]+") do parts[#parts+1]=p end
+    for p in path:gmatch("[^%.]+") do
+        parts[#parts+1]=p
+    end
+
     local node=roots[parts[1]] or game:FindFirstChild(parts[1])
     if not node then return nil end
+
     for i=2,#parts do
         node=node:FindFirstChild(parts[i])
         if not node then return nil end
     end
+
     return node
 end
 
+local function isRemote(instance)
+    return typeof(instance)=="Instance" and (instance:IsA("RemoteEvent") or instance:IsA("RemoteFunction"))
+end
+
 local function resolveRemote(path)
-    if typeof(path)=="Instance" then return path end
+    if typeof(path)=="Instance" then
+        return isRemote(path) and path or nil
+    end
 
     if type(path)=="table" and path.__expr~=nil then
         local value=evalExpression(tostring(path.__expr))
-        if typeof(value)=="Instance" then return value end
+        return isRemote(value) and value or nil
+    end
+
+    if type(path)~="string" then
         return nil
     end
 
-    if type(path)~="string" then return nil end
+    path=trim(path)
+    if path=="" then return nil end
 
-    -- First try the simple dotted Instance path.
+    -- 1. Standard dotted path.
     local direct=resolve(path)
-    if direct and (direct:IsA("RemoteEvent") or direct:IsA("RemoteFunction")) then
+    if isRemote(direct) then
         return direct
     end
 
-    -- Then allow executor-friendly Lua expressions such as:
-    -- ReplicatedStorage.Remotes:GetChildren()[70]
-    -- game:GetService("ReplicatedStorage").Remotes:GetChildren()[70]
+    -- 2. Lua expression / indexed GetChildren path.
+    -- The rewriteExpression call is crucial for strings beginning with
+    -- ReplicatedStorage, Players, Workspace, or workspace.
     if path:find(":",1,true) or path:find("[",1,true) or path:find("]",1,true) then
-        local value=evalExpression(path)
-        if typeof(value)=="Instance" and (value:IsA("RemoteEvent") or value:IsA("RemoteFunction")) then
+        local value,expressionError=evalExpression(path)
+        if isRemote(value) then
             return value
+        end
+
+        -- Try one explicit normalized form for common ReplicatedStorage paths.
+        if expressionError and path:sub(1,18)=="ReplicatedStorage." then
+            local normalized='game:GetService("ReplicatedStorage")'..path:sub(18)
+            local retry=evalExpression(normalized)
+            if isRemote(retry) then
+                return retry
+            end
         end
     end
 
+    -- 3. game:GetService("...").Path fallback.
     local serviceName,rest=path:match('^game:GetService%(%s*["\']([^"\']+)["\']%s*%)%.(.+)$')
     if serviceName and rest then
         local ok,service=pcall(game.GetService,game,serviceName)
@@ -122,7 +192,7 @@ local function resolveRemote(path)
                 node=node:FindFirstChild(p)
                 if not node then break end
             end
-            if node and (node:IsA("RemoteEvent") or node:IsA("RemoteFunction")) then
+            if isRemote(node) then
                 return node
             end
         end
@@ -132,7 +202,9 @@ local function resolveRemote(path)
 end
 
 local function evalValue(v)
-    if type(v)~="table" or v.__expr==nil then return v end
+    if type(v)~="table" or v.__expr==nil then
+        return v
+    end
     local value=evalExpression(tostring(v.__expr))
     return value
 end
@@ -172,7 +244,7 @@ function Builder:_stopInterval(mod)
 end
 
 function Builder:_invokeRemote(mod,extra)
-    if not mod.Remote then
+    if not isRemote(mod.Remote) then
         self.Status=mod.Name..": Remote not found"
         self:_updateStatus()
         return false,nil
@@ -182,18 +254,21 @@ function Builder:_invokeRemote(mod,extra)
     for i,v in ipairs(mod.Args) do
         args[i]=evalValue(v)
     end
-    if extra~=nil then args[#args+1]=extra end
+    if extra~=nil then
+        args[#args+1]=extra
+    end
 
     local ok,result=pcall(function()
         if mod.Remote:IsA("RemoteEvent") then
-            return mod.Remote:FireServer(table.unpack(args))
+            mod.Remote:FireServer(table.unpack(args))
+            return true
         elseif mod.Remote:IsA("RemoteFunction") then
             return mod.Remote:InvokeServer(table.unpack(args))
         end
         error("Unsupported remote type")
     end)
 
-    self.Status=ok and mod.Name..": OK" or mod.Name..": "..tostring(result)
+    self.Status=ok and (mod.Name..": OK") or (mod.Name..": "..tostring(result))
     self:_updateStatus()
     return ok,result
 end
@@ -232,111 +307,6 @@ function Builder:_startInterval(mod)
     end)
 end
 
-function Builder:AddModule(def)
-    assert(type(def)=="table","AddModule expects a table")
-    assert(def.Name,"AddModule: Name is required")
-    assert(def.Category,"AddModule: Category is required")
-
-    local name,category=tostring(def.Name),tostring(def.Category)
-    local old=self.Modules[name]
-    if old then
-        self:_stopInterval(old)
-        disconnectAll(old._connections)
-
-        local oldList=self.CategoryMap[old.Category]
-        if oldList then
-            for i=#oldList,1,-1 do
-                if oldList[i]==old then
-                    table.remove(oldList,i)
-                end
-            end
-            if #oldList==0 then
-                self.CategoryMap[old.Category]=nil
-                for i=#self.Categories,1,-1 do
-                    if self.Categories[i]==old.Category then
-                        table.remove(self.Categories,i)
-                    end
-                end
-            end
-        end
-    end
-
-    local control=def.Control or {Type=def.Type or "Toggle"}
-    if type(control)=="string" then control={Type=control} end
-
-    local mod={}
-    for k,v in pairs(def) do mod[k]=v end
-    mod.Name=name
-    mod.Category=category
-    mod.Control=control
-    mod.Type=tostring(control.Type or "Toggle")
-    mod.Args=def.Args or {}
-    mod.Options=def.Options or {}
-    mod.Enabled=def.Enabled==true
-    mod.Value=def.Value
-    mod.Remote=resolveRemote(def.Remote)
-    mod.Subcategory=trim(def.Subcategory or def.SubCategory or def.SubcategoryName or "")
-    mod.Interval=tonumber(def.Interval)
-    mod.UI={}
-    mod._connections={}
-    mod._loopToken=0
-    mod._loopRunning=false
-
-    self.Modules[name]=mod
-
-    if not self.CategoryMap[category] then
-        self.CategoryMap[category]={}
-        self.Categories[#self.Categories+1]=category
-    end
-    table.insert(self.CategoryMap[category],mod)
-
-    if self.Gui then self:BuildGui() end
-
-    -- If the module starts enabled and has an interval, start it immediately.
-    if mod.Enabled and string.lower(mod.Type)=="toggle" then
-        if mod.Interval and mod.Interval>0 then
-            self:_startInterval(mod)
-        else
-            self:_fire(mod)
-        end
-    end
-
-    return mod
-end
-
-function Builder:AddModules(list)
-    for _,def in ipairs(list or {}) do
-        self:AddModule(def)
-    end
-    return self
-end
-
-function Builder:RemoveModule(name)
-    local mod=self.Modules[name]
-    if not mod then return false end
-    self:_stopInterval(mod)
-    disconnectAll(mod._connections)
-    self.Modules[name]=nil
-
-    local list=self.CategoryMap[mod.Category]
-    if list then
-        for i=#list,1,-1 do
-            if list[i]==mod then table.remove(list,i) end
-        end
-        if #list==0 then
-            self.CategoryMap[mod.Category]=nil
-            for i=#self.Categories,1,-1 do
-                if self.Categories[i]==mod.Category then
-                    table.remove(self.Categories,i)
-                end
-            end
-        end
-    end
-
-    if self.Gui then self:BuildGui() end
-    return true
-end
-
 function Builder:_updateStatus()
     if self.StatusLabel then
         self.StatusLabel.Text=self.Status
@@ -364,6 +334,116 @@ function Builder:_setToggleState(mod,state)
     else
         self:_stopInterval(mod)
     end
+end
+
+function Builder:AddModule(def)
+    assert(type(def)=="table","AddModule expects a table")
+    assert(def.Name,"AddModule: Name is required")
+    assert(def.Category,"AddModule: Category is required")
+
+    local name,category=tostring(def.Name),tostring(def.Category)
+    local old=self.Modules[name]
+
+    if old then
+        self:_stopInterval(old)
+        disconnectAll(old._connections)
+
+        local oldList=self.CategoryMap[old.Category]
+        if oldList then
+            for i=#oldList,1,-1 do
+                if oldList[i]==old then
+                    table.remove(oldList,i)
+                end
+            end
+            if #oldList==0 then
+                self.CategoryMap[old.Category]=nil
+                for i=#self.Categories,1,-1 do
+                    if self.Categories[i]==old.Category then
+                        table.remove(self.Categories,i)
+                    end
+                end
+            end
+        end
+    end
+
+    local control=def.Control or {Type=def.Type or "Toggle"}
+    if type(control)=="string" then
+        control={Type=control}
+    end
+
+    local mod={}
+    for k,v in pairs(def) do
+        mod[k]=v
+    end
+
+    mod.Name=name
+    mod.Category=category
+    mod.Control=control
+    mod.Type=tostring(control.Type or "Toggle")
+    mod.Args=def.Args or {}
+    mod.Options=def.Options or {}
+    mod.Enabled=def.Enabled==true
+    mod.Value=def.Value
+    mod.Remote=resolveRemote(def.Remote)
+    mod.Subcategory=trim(def.Subcategory or def.SubCategory or def.SubcategoryName or "")
+    mod.Interval=tonumber(def.Interval)
+    mod.UI={}
+    mod._connections={}
+    mod._loopToken=0
+    mod._loopRunning=false
+
+    self.Modules[name]=mod
+
+    if not self.CategoryMap[category] then
+        self.CategoryMap[category]={}
+        self.Categories[#self.Categories+1]=category
+    end
+    table.insert(self.CategoryMap[category],mod)
+
+    if self.Gui then
+        self:BuildGui()
+    end
+
+    return mod
+end
+
+function Builder:AddModules(list)
+    for _,def in ipairs(list or {}) do
+        self:AddModule(def)
+    end
+    return self
+end
+
+function Builder:RemoveModule(name)
+    local mod=self.Modules[name]
+    if not mod then return false end
+
+    self:_stopInterval(mod)
+    disconnectAll(mod._connections)
+    self.Modules[name]=nil
+
+    local list=self.CategoryMap[mod.Category]
+    if list then
+        for i=#list,1,-1 do
+            if list[i]==mod then
+                table.remove(list,i)
+            end
+        end
+        if #list==0 then
+            self.CategoryMap[mod.Category]=nil
+            for i=#self.Categories,1,-1 do
+                if self.Categories[i]==mod.Category then
+                    table.remove(self.Categories,i)
+                end
+            end
+        end
+    end
+
+    if self.Gui then
+        self:BuildGui()
+    end
+
+    return true
 end
 
 function Builder:_makeRow(mod,parent,order)
@@ -428,7 +508,10 @@ function Builder:_makeRow(mod,parent,order)
             Size=UDim2.fromOffset(70,SIZE.Row),
             Position=UDim2.new(1,-75,0,0),
             BackgroundTransparency=1,
+            BorderSizePixel=0,
             Text="",
+            AutoButtonColor=false,
+            Modal=false,
         })
 
         table.insert(mod._connections,hit.MouseButton1Click:Connect(function()
@@ -449,6 +532,7 @@ function Builder:_makeRow(mod,parent,order)
             Font=Enum.Font.Gotham,
             TextSize=10,
             AutoButtonColor=false,
+            Modal=false,
         })
         corner(box,5)
         table.insert(mod._connections,box.MouseButton1Click:Connect(function()
@@ -456,7 +540,10 @@ function Builder:_makeRow(mod,parent,order)
             local cur=tostring(mod.Value or mod.Options[1])
             local idx=1
             for i,v in ipairs(mod.Options) do
-                if tostring(v)==cur then idx=i break end
+                if tostring(v)==cur then
+                    idx=i
+                    break
+                end
             end
             idx=idx%#mod.Options+1
             mod.Value=mod.Options[idx]
@@ -476,6 +563,7 @@ function Builder:_makeRow(mod,parent,order)
             Font=Enum.Font.GothamMedium,
             TextSize=10,
             AutoButtonColor=false,
+            Modal=false,
         })
         corner(b,5)
         table.insert(mod._connections,b.MouseButton1Click:Connect(function()
@@ -559,7 +647,7 @@ end
 function Builder:_showCategory(category)
     self.ActiveCategory=category
 
-    -- Rebuild only UI connections. Interval loops deliberately keep running.
+    -- Rebuild only UI connections. Existing interval loops stay alive.
     for _,mod in pairs(self.Modules) do
         disconnectAll(mod._connections)
         mod._connections={}
@@ -621,11 +709,13 @@ local function headerButton(parent,text,pos,size)
         Size=size or UDim2.fromOffset(28,28),
         Position=pos,
         BackgroundTransparency=1,
+        BorderSizePixel=0,
         Text=text,
         TextColor3=COLORS.Text3,
         Font=Enum.Font.GothamMedium,
         TextSize=14,
         AutoButtonColor=false,
+        Modal=false,
     })
     b.MouseEnter:Connect(function()
         TweenService:Create(b,EASE,{TextColor3=COLORS.Text}):Play()
@@ -659,7 +749,10 @@ function Builder:_setMinimized(minimized)
 end
 
 function Builder:BuildGui()
-    if self.Gui then self.Gui:Destroy() end
+    if self.Gui then
+        self.Gui:Destroy()
+    end
+
     disconnectAll(self._connections)
 
     for _,m in pairs(self.Modules) do
@@ -671,13 +764,15 @@ function Builder:BuildGui()
     self._categoryButtons={}
     self._minimized=false
 
+    -- The ScreenGui contains ONLY the actual window. There is deliberately
+    -- no fullscreen overlay/frame, so the game world stays un-dimmed.
     self.Gui=make("ScreenGui",{
         Name="ScriptBuilder_"..self.Name:gsub("%W","_"),
         Parent=PlayerGui,
         ResetOnSpawn=false,
         IgnoreGuiInset=true,
         ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
-        DisplayOrder=9999,
+        DisplayOrder=10,
     })
 
     self.Root=make("Frame",{
@@ -685,8 +780,10 @@ function Builder:BuildGui()
         Size=UDim2.fromOffset(SIZE.W,SIZE.H),
         Position=UDim2.new(0.5,-SIZE.W/2,0.5,-SIZE.H/2),
         BackgroundColor3=COLORS.Outer,
+        BackgroundTransparency=0,
         BorderSizePixel=0,
         ClipsDescendants=true,
+        ZIndex=2,
     })
     corner(self.Root,6)
     stroke(self.Root,COLORS.Border,1,0.18)
@@ -696,6 +793,7 @@ function Builder:BuildGui()
         Size=UDim2.new(1,0,0,SIZE.Header),
         BackgroundColor3=COLORS.Header,
         BorderSizePixel=0,
+        ZIndex=3,
     })
     corner(header,6)
     make("Frame",{
@@ -704,6 +802,7 @@ function Builder:BuildGui()
         Position=UDim2.new(0,0,1,-8),
         BackgroundColor3=COLORS.Header,
         BorderSizePixel=0,
+        ZIndex=3,
     })
 
     make("TextLabel",{
@@ -717,6 +816,7 @@ function Builder:BuildGui()
         TextSize=13,
         TextXAlignment=Enum.TextXAlignment.Left,
         TextYAlignment=Enum.TextYAlignment.Center,
+        ZIndex=4,
     })
 
     self.StatusLabel=make("TextLabel",{
@@ -772,6 +872,7 @@ function Builder:BuildGui()
         Position=UDim2.new(0,0,0,SIZE.Header),
         BackgroundColor3=COLORS.Sidebar,
         BorderSizePixel=0,
+        ZIndex=3,
     })
     make("UIPadding",{
         Parent=self.Sidebar,
@@ -799,6 +900,8 @@ function Builder:BuildGui()
             TextSize=11,
             TextXAlignment=Enum.TextXAlignment.Left,
             AutoButtonColor=false,
+            Modal=false,
+            ZIndex=4,
         })
         corner(b,5)
         make("TextLabel",{
@@ -812,6 +915,7 @@ function Builder:BuildGui()
             TextSize=16,
             TextXAlignment=Enum.TextXAlignment.Center,
             TextYAlignment=Enum.TextYAlignment.Center,
+            ZIndex=5,
         })
         self._categoryButtons[cat]=b
 
@@ -836,6 +940,7 @@ function Builder:BuildGui()
         Size=UDim2.new(1,-SIZE.Sidebar,1,-SIZE.Header),
         Position=UDim2.new(0,SIZE.Sidebar,0,SIZE.Header),
         BackgroundTransparency=1,
+        ZIndex=3,
     })
 
     self.Content=make("ScrollingFrame",{
@@ -848,6 +953,7 @@ function Builder:BuildGui()
         ScrollBarThickness=4,
         ScrollBarImageColor3=Color3.fromRGB(70,70,70),
         ScrollBarImageTransparency=0.25,
+        ZIndex=3,
     })
     make("UIPadding",{
         Parent=self.Content,
@@ -873,23 +979,33 @@ function Builder:BuildGui()
 end
 
 function Builder:Show()
-    if not self.Gui then self:BuildGui() end
+    if not self.Gui then
+        self:BuildGui()
+    end
     self.Gui.Enabled=true
     self.Visible=true
 end
 
 function Builder:Hide()
-    if self.Gui then self.Gui.Enabled=false end
+    if self.Gui then
+        self.Gui.Enabled=false
+    end
     self.Visible=false
 end
 
 function Builder:Toggle()
-    if self.Visible then self:Hide() else self:Show() end
+    if self.Visible then
+        self:Hide()
+    else
+        self:Show()
+    end
 end
 
 function Builder:Run()
     self:Show()
-    if self._f7 then self._f7:Disconnect() end
+    if self._f7 then
+        self._f7:Disconnect()
+    end
     self._f7=UserInputService.InputBegan:Connect(function(input,processed)
         if not processed and input.KeyCode==Enum.KeyCode.F7 then
             self:Toggle()
@@ -900,14 +1016,17 @@ end
 function Builder:SetModuleValue(name,value)
     local m=self.Modules[name]
     if not m then return false end
-    local enabled=value==true
-    m.Value=value
+
     if string.lower(m.Type)=="toggle" then
-        self:_setToggleState(m,enabled)
+        self:_setToggleState(m,value==true)
     else
-        m.Enabled=enabled
-        if m.UI.Track then self:_toggleVisual(m) end
+        m.Value=value
+        m.Enabled=value==true
+        if m.UI.Track then
+            self:_toggleVisual(m)
+        end
     end
+
     return true
 end
 
