@@ -6,7 +6,7 @@ local TweenService        = game:GetService("TweenService")
 local Player    = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
-local Builder = {}
+Builder = {}
 Builder.__index = Builder
 
 local GUILIB = {}
