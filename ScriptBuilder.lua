@@ -54,7 +54,7 @@ local function resolveRemote(expression)
     if not expression or expression == "" then return nil end
     local path = expression:gsub("^%s+", ""):gsub("%s+$", "")
     if path == "" then return nil end
-    if path:match(":%s*(FireServer|InvokeServer)") then return nil end
+    if path:match(":%s*FireServer") or path:match(":%s*InvokeServer") then return nil end
 
     if path:sub(1, 5) == "game:" or path:sub(1, 5) == "game." then
         local ok, result = pcall(function()
@@ -231,7 +231,7 @@ local function parseRemoteSnippet(snippet)
     -- Find method call: :FireServer( or :InvokeServer(
     -- Allow optional whitespace between method name and "("
     local methodName
-    local m = clean:match(":(FireServer|InvokeServer)%s*%(")
+    local m = clean:match(":FireServer%s*%(") or clean:match(":InvokeServer%s*%(")
     if m then
         methodName = m
     end
