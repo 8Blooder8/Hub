@@ -874,7 +874,7 @@ end
 function Builder.New(scriptName, config)
     local self = setmetatable({}, Builder)
     self.GuiLib = GUILIB.New(scriptName, config or {})
-    self.GuiLib:_RegisterInternal = true
+    self.GuiLib._RegisterInternal = true
     return self
 end
 
