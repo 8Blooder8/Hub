@@ -229,8 +229,9 @@ local function parseRemoteSnippet(snippet)
     local clean = trim(snippet)
 
     -- Find method call: :FireServer( or :InvokeServer(
+    -- Allow optional whitespace between method name and "("
     local methodName
-    local m = clean:match(":(FireServer|InvokeServer)%(")
+    local m = clean:match(":(FireServer|InvokeServer)%s*%(")
     if m then
         methodName = m
     end
@@ -242,13 +243,18 @@ local function parseRemoteSnippet(snippet)
     result.Method = methodName
     result.RemoteType = (methodName == "InvokeServer") and "Function" or "Event"
 
-    -- Find the position of the method call opening paren
-    local parenPos = clean:find(":" .. methodName .. "%(")
+    -- Find the position of the method call colon
+    local parenPos = clean:find(":" .. methodName .. "%s*%(")
     if not parenPos then
         return false, "malformed syntax"
     end
 
-    local openParen = parenPos + #methodName + 1
+    -- Find the opening paren (allow whitespace between name and paren)
+    local openParen = clean:find("%(", parenPos + #methodName)
+    if not openParen then
+        return false, "malformed syntax: missing opening paren"
+    end
+
     local depth = 1
     local j = openParen + 1
 
@@ -288,12 +294,13 @@ local function parseRemoteSnippet(snippet)
         table.insert(result.Args, val)
     end
 
-    -- Find the object expression before the colon
-    local colonPos = parenPos
-    local beforeColon = clean:sub(1, colonPos - 1)
-    local objExpr = trim(beforeColon)
+    -- Extract ONLY the object expression immediately before ":"
+    -- Take the last line of text before the colon, not everything before it
+    local beforeColon = clean:sub(1, parenPos - 1)
+    local lastLine = beforeColon:match("[^\n]*$") or trim(beforeColon)
+    local objExpr = trim(lastLine)
 
-    -- If objExpr is a simple variable, try to find its assignment
+    -- If objExpr is a simple identifier (no dots), try to find its assignment
     if objExpr and not objExpr:match("%.") then
         local varName = objExpr
 
