@@ -1,9 +1,9 @@
 -- ScriptBuilder.lua
--- Executor-friendly GUI builder.
--- Remote resolver accepts Instances, normal paths and Lua-style expressions.
+-- Simple module builder.
+-- A module only needs Name, Category, optional Subcategory, Type, Interval,
+-- optional Params and a Lua Code snippet. No Remote/Args API is required.
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 
@@ -36,12 +36,12 @@ local EASE = TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out
 local MIN_INTERVAL = 0.01
 
 local function make(className, props)
-    local o = Instance.new(className)
-    for k,v in pairs(props or {}) do
-        if k ~= "Parent" then o[k] = v end
+    local object = Instance.new(className)
+    for key, value in pairs(props or {}) do
+        if key ~= "Parent" then object[key] = value end
     end
-    if props and props.Parent then o.Parent = props.Parent end
-    return o
+    if props and props.Parent then object.Parent = props.Parent end
+    return object
 end
 
 local function corner(parent, radius)
@@ -57,150 +57,8 @@ local function stroke(parent, color, thickness, transparency)
     })
 end
 
-local function trim(s)
-    return tostring(s or ""):match("^%s*(.-)%s*$") or ""
-end
-
-local function isRemote(value)
-    return typeof(value) == "Instance"
-        and (value:IsA("RemoteEvent") or value:IsA("RemoteFunction"))
-end
-
-local function serviceByName(name)
-    local ok, result = pcall(function()
-        return game:GetService(name)
-    end)
-    return ok and result or nil
-end
-
-local ROOTS = {
-    game = function() return game end,
-    ReplicatedStorage = function() return ReplicatedStorage end,
-    Players = function() return Players end,
-    workspace = function() return workspace end,
-    Workspace = function() return workspace end,
-}
-
--- Resolve a dotted Roblox instance path without loadstring.
-local function resolveBase(path)
-    path = trim(path)
-    if path == "" then return nil end
-
-    local serviceName, rest = path:match(
-        '^game:GetService%(%s*["\']([^"\']+)["\']%s*%)%.(.+)$'
-    )
-
-    local node
-
-    if serviceName then
-        node = serviceByName(serviceName)
-        if not node then return nil end
-    else
-        local rootName, remainder = path:match("^(%w+)%.(.+)$")
-        if not rootName then
-            if path == "game" then return game end
-            if path == "workspace" or path == "Workspace" then return workspace end
-            return nil
-        end
-
-        local rootFactory = ROOTS[rootName]
-        node = rootFactory and rootFactory() or nil
-        rest = remainder
-        if not node then return nil end
-    end
-
-    for part in tostring(rest):gmatch("[^%.]+") do
-        node = node:FindFirstChild(part)
-        if not node then return nil end
-    end
-
-    return node
-end
-
-local function resolveGetChildrenIndex(path)
-    local prefix, index = path:match("^(.-):%s*GetChildren%s*%(%s*%)%s*%[%s*(%d+)%s*%]$")
-    if not prefix then return nil end
-
-    local parent = resolveBase(prefix)
-    if not parent then return nil end
-
-    local children = parent:GetChildren()
-    local child = children[tonumber(index)]
-    return child
-end
-
--- Last-resort expression resolver with an explicit environment.
--- This is deliberately isolated from the common path above.
-local function resolveExpression(path)
-    if not loadstring then return nil end
-
-    local fn, err = loadstring("return " .. path)
-    if not fn then return nil, err end
-
-    local env = {
-        game = game,
-        workspace = workspace,
-        Workspace = workspace,
-        ReplicatedStorage = ReplicatedStorage,
-        Players = Players,
-    }
-
-    local okSet = false
-    if setfenv then
-        okSet = pcall(setfenv, fn, env)
-    end
-
-    local ok, result = pcall(fn)
-    if ok and typeof(result) == "Instance" then
-        return result
-    end
-
-    return nil, result
-end
-
-local function resolveRemote(path)
-    if typeof(path) == "Instance" then
-        return isRemote(path) and path or nil
-    end
-
-    if type(path) == "table" and path.__expr ~= nil then
-        path = tostring(path.__expr)
-    end
-
-    if type(path) ~= "string" then return nil end
-    path = trim(path)
-    if path == "" then return nil end
-
-    -- Exact syntax used by the user's working script:
-    -- ReplicatedStorage.Remotes:GetChildren()[70]
-    local child = resolveGetChildrenIndex(path)
-    if child ~= nil then
-        return isRemote(child) and child or nil
-    end
-
-    -- Normal dotted path:
-    -- ReplicatedStorage.Remotes.SomeRemote
-    local direct = resolveBase(path)
-    if isRemote(direct) then
-        return direct
-    end
-
-    -- Also support more complicated valid Lua expressions.
-    local expressionResult = resolveExpression(path)
-    if isRemote(expressionResult) then
-        return expressionResult
-    end
-
-    return nil
-end
-
-local function evalValue(value)
-    if type(value) ~= "table" or value.__expr == nil then
-        return value
-    end
-
-    local result = select(1, resolveExpression(tostring(value.__expr)))
-    return result
+local function trim(value)
+    return tostring(value or ""):match("^%s*(.-)%s*$") or ""
 end
 
 local function disconnectAll(list)
@@ -208,6 +66,58 @@ local function disconnectAll(list)
         pcall(function() list[i]:Disconnect() end)
         list[i] = nil
     end
+end
+
+local function globalEnv()
+    if getgenv then
+        local ok, env = pcall(getgenv)
+        if ok and type(env) == "table" then return env end
+    end
+    return _G
+end
+
+local function executeSnippet(mod, value)
+    local code = trim(mod.Code)
+    if code == "" then return false, "Code is empty" end
+
+    local compiler = loadstring or load
+    if not compiler then return false, "loadstring/load is unavailable" end
+
+    local fn, compileError = compiler(code)
+    if not fn then return false, compileError end
+
+    local env = {
+        game = game,
+        workspace = workspace,
+        Workspace = workspace,
+        Players = Players,
+        LocalPlayer = Player,
+        UserInputService = UserInputService,
+        TweenService = TweenService,
+        Enum = Enum,
+        task = task,
+        math = math,
+        string = string,
+        table = table,
+        typeof = typeof,
+        print = print,
+        warn = warn,
+
+        module = mod,
+        value = value,
+        Value = value,
+        enabled = mod.Enabled == true,
+        Enabled = mod.Enabled == true,
+        params = mod.Params,
+        Params = mod.Params,
+    }
+
+    if setfenv then
+        local ok, envError = pcall(setfenv, fn, setmetatable(env, {__index=globalEnv()}))
+        if not ok then return false, envError end
+    end
+
+    return pcall(fn)
 end
 
 function Builder.New(name, config)
@@ -232,86 +142,49 @@ function Builder.New(name, config)
     return self
 end
 
+function Builder:_updateStatus()
+    if self.StatusLabel then self.StatusLabel.Text = self.Status end
+end
+
 function Builder:_stopInterval(mod)
     mod._loopToken = (mod._loopToken or 0) + 1
     mod._loopRunning = false
 end
 
-function Builder:_updateStatus()
-    if self.StatusLabel then
-        self.StatusLabel.Text = self.Status
-    end
-end
-
-function Builder:_invokeRemote(mod, extra)
-    if not isRemote(mod.Remote) then
-        self.Status = mod.Name .. ": Remote not found"
-        self:_updateStatus()
-        warn("[ScriptBuilder] " .. self.Status .. " | " .. tostring(mod.RemotePath))
-        return false, nil
-    end
-
-    local args = table.create(#mod.Args)
-    for i,v in ipairs(mod.Args) do
-        args[i] = evalValue(v)
-    end
-    if extra ~= nil then
-        args[#args + 1] = extra
-    end
-
-    local ok, result = pcall(function()
-        if mod.Remote:IsA("RemoteEvent") then
-            mod.Remote:FireServer(table.unpack(args))
-            return true
-        elseif mod.Remote:IsA("RemoteFunction") then
-            return mod.Remote:InvokeServer(table.unpack(args))
-        end
-        error("Unsupported remote type: " .. mod.Remote.ClassName)
-    end)
-
+function Builder:_execute(mod, value)
+    local ok, result = executeSnippet(mod, value ~= nil and value or mod.Value)
     self.Status = ok and (mod.Name .. ": OK") or (mod.Name .. ": " .. tostring(result))
     self:_updateStatus()
-    if not ok then
-        warn("[ScriptBuilder] " .. self.Status)
-    end
+    if not ok then warn("[ScriptBuilder] " .. self.Status) end
     return ok, result
 end
 
-function Builder:_fire(mod, extra)
+function Builder:_fire(mod, value)
     task.spawn(function()
-        self:_invokeRemote(mod, extra)
+        self:_execute(mod, value ~= nil and value or mod.Value)
     end)
     return true
 end
 
 function Builder:_startInterval(mod)
     local interval = tonumber(mod.Interval)
-
     if not interval or interval <= 0 then
-        self:_fire(mod)
+        self:_fire(mod, mod.Value)
         return
     end
 
-    interval = math.max(interval, MIN_INTERVAL)
     self:_stopInterval(mod)
-
+    interval = math.max(interval, MIN_INTERVAL)
     local token = mod._loopToken
     mod._loopRunning = true
 
     task.spawn(function()
         while mod.Enabled and mod._loopToken == token do
-            self:_invokeRemote(mod)
-
-            if not mod.Enabled or mod._loopToken ~= token then
-                break
-            end
-
+            self:_execute(mod, mod.Value)
+            if not mod.Enabled or mod._loopToken ~= token then break end
             task.wait(interval)
         end
-
-        if mod._loopToken == token then
-            mod._loopRunning = false
-        end
+        if mod._loopToken == token then mod._loopRunning = false end
     end)
 end
 
@@ -322,7 +195,6 @@ function Builder:_toggleVisual(mod)
     TweenService:Create(track, EASE, {
         BackgroundColor3 = mod.Enabled and COLORS.Accent or COLORS.ToggleOff,
     }):Play()
-
     TweenService:Create(knob, EASE, {
         Position = mod.Enabled
             and UDim2.new(1,-18,0.5,-8)
@@ -339,7 +211,7 @@ function Builder:_setToggleState(mod, state)
         if mod.Interval and mod.Interval > 0 then
             self:_startInterval(mod)
         else
-            self:_fire(mod)
+            self:_fire(mod, true)
         end
     else
         self:_stopInterval(mod)
@@ -358,84 +230,72 @@ function Builder:AddModule(def)
     if old then
         self:_stopInterval(old)
         disconnectAll(old._connections)
-
         local oldList = self.CategoryMap[old.Category]
         if oldList then
             for i = #oldList, 1, -1 do
-                if oldList[i] == old then
-                    table.remove(oldList, i)
-                end
+                if oldList[i] == old then table.remove(oldList, i) end
             end
-
             if #oldList == 0 then
                 self.CategoryMap[old.Category] = nil
                 for i = #self.Categories, 1, -1 do
-                    if self.Categories[i] == old.Category then
-                        table.remove(self.Categories, i)
-                    end
+                    if self.Categories[i] == old.Category then table.remove(self.Categories, i) end
                 end
             end
         end
     end
 
-    local control = def.Control or {Type = def.Type or "Toggle"}
-    if type(control) == "string" then
-        control = {Type = control}
-    end
+    local params = type(def.Params) == "table" and def.Params or {}
+    local typ = tostring(def.Type or "Button")
+    local lowerType = typ:lower()
 
     local mod = {}
-    for k,v in pairs(def) do
-        mod[k] = v
-    end
-
+    for key, value in pairs(def) do mod[key] = value end
     mod.Name = name
     mod.Category = category
-    mod.Control = control
-    mod.Type = tostring(control.Type or "Toggle")
-    mod.Args = def.Args or {}
-    mod.Options = def.Options or {}
-    mod.Enabled = def.Enabled == true
-    mod.Value = def.Value
-    mod.RemotePath = def.Remote
-    mod.Remote = resolveRemote(def.Remote)
-    mod.Subcategory = trim(def.Subcategory or def.SubCategory or def.SubcategoryName or "")
+    mod.Subcategory = trim(def.Subcategory or "")
+    mod.Type = typ
     mod.Interval = tonumber(def.Interval)
+    mod.Params = params
+    mod.Options = type(params.Options) == "table" and params.Options or {}
+    mod.Code = tostring(def.Code or "")
+    mod.Value = def.Value
+    if mod.Value == nil then mod.Value = params.Default end
+    if lowerType == "toggle" then mod.Enabled = def.Enabled == true or params.Default == true else mod.Enabled = false end
     mod.UI = {}
     mod._connections = {}
     mod._loopToken = 0
     mod._loopRunning = false
 
-    self.Modules[name] = mod
+    if lowerType == "slider" then
+        mod.Params.Min = tonumber(mod.Params.Min) or 0
+        mod.Params.Max = tonumber(mod.Params.Max) or 100
+        mod.Params.Step = math.max(tonumber(mod.Params.Step) or 1, 0.000001)
+        mod.Value = tonumber(mod.Value) or mod.Params.Min
+        mod.Value = math.clamp(mod.Value, mod.Params.Min, mod.Params.Max)
+    elseif lowerType == "select" or lowerType == "dropdown" then
+        if mod.Value == nil then mod.Value = mod.Options[1] end
+    end
 
+    self.Modules[name] = mod
     if not self.CategoryMap[category] then
         self.CategoryMap[category] = {}
-        self.Categories[#self.Categories + 1] = category
+        table.insert(self.Categories, category)
     end
-
     table.insert(self.CategoryMap[category], mod)
 
-    if not mod.Remote then
-        warn("[ScriptBuilder] " .. name .. ": could not resolve Remote: " .. tostring(def.Remote))
-    end
-
-    if self.Gui then
-        self:BuildGui()
-    end
-
+    if mod.Code == "" then warn("[ScriptBuilder] " .. name .. ": Code is empty") end
+    if self.Gui then self:BuildGui() end
     return mod
 end
 
 function Builder:AddModules(list)
-    for _,def in ipairs(list or {}) do
-        self:AddModule(def)
-    end
+    for _, def in ipairs(list or {}) do self:AddModule(def) end
     return self
 end
 
 function Builder:RemoveModule(name)
     local mod = self.Modules[name]
     if not mod then return false end
-
     self:_stopInterval(mod)
     disconnectAll(mod._connections)
     self.Modules[name] = nil
@@ -443,177 +303,162 @@ function Builder:RemoveModule(name)
     local list = self.CategoryMap[mod.Category]
     if list then
         for i = #list, 1, -1 do
-            if list[i] == mod then
-                table.remove(list, i)
-            end
+            if list[i] == mod then table.remove(list, i) end
         end
-
         if #list == 0 then
             self.CategoryMap[mod.Category] = nil
             for i = #self.Categories, 1, -1 do
-                if self.Categories[i] == mod.Category then
-                    table.remove(self.Categories, i)
-                end
+                if self.Categories[i] == mod.Category then table.remove(self.Categories, i) end
             end
         end
     end
-
-    if self.Gui then
-        self:BuildGui()
-    end
-
+    if self.Gui then self:BuildGui() end
     return true
 end
 
 function Builder:_makeRow(mod, parent, order)
-    parent = parent or self.Content
-
     local row = make("Frame", {
-        Parent = parent,
-        Size = UDim2.new(1,0,0,SIZE.Row),
-        BackgroundColor3 = COLORS.Row,
-        BorderSizePixel = 0,
-        LayoutOrder = order or 1,
+        Parent=parent,
+        Size=UDim2.new(1,0,0,SIZE.Row),
+        BackgroundColor3=COLORS.Row,
+        BorderSizePixel=0,
+        LayoutOrder=order,
     })
     row:SetAttribute("SBContent", true)
-    corner(row, 5)
-    stroke(row, Color3.fromRGB(47,47,47), 1, 0.65)
+    corner(row,5)
+    stroke(row, Color3.fromRGB(47,47,47),1,0.65)
 
     make("TextLabel", {
-        Parent = row,
-        BackgroundTransparency = 1,
-        Size = UDim2.new(1,-125,1,0),
-        Position = UDim2.fromOffset(11,0),
-        Text = mod.Name,
-        TextColor3 = COLORS.Text2,
-        Font = Enum.Font.Gotham,
-        TextSize = 11,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Center,
+        Parent=row, BackgroundTransparency=1,
+        Size=UDim2.new(1,-125,1,0), Position=UDim2.fromOffset(11,0),
+        Text=mod.Name, TextColor3=COLORS.Text2, Font=Enum.Font.Gotham, TextSize=11,
+        TextXAlignment=Enum.TextXAlignment.Left, TextYAlignment=Enum.TextYAlignment.Center,
     })
 
     table.insert(mod._connections, row.MouseEnter:Connect(function()
-        TweenService:Create(row, EASE, {BackgroundColor3 = COLORS.Hover}):Play()
+        TweenService:Create(row,EASE,{BackgroundColor3=COLORS.Hover}):Play()
     end))
-
     table.insert(mod._connections, row.MouseLeave:Connect(function()
-        TweenService:Create(row, EASE, {BackgroundColor3 = COLORS.Row}):Play()
+        TweenService:Create(row,EASE,{BackgroundColor3=COLORS.Row}):Play()
     end))
 
-    local typ = string.lower(mod.Type)
+    local typ = mod.Type:lower()
 
     if typ == "toggle" then
         local track = make("Frame", {
-            Parent = row,
-            Size = UDim2.fromOffset(39,20),
-            Position = UDim2.new(1,-51,0.5,-10),
-            BackgroundColor3 = COLORS.ToggleOff,
-            BorderSizePixel = 0,
+            Parent=row, Size=UDim2.fromOffset(39,20), Position=UDim2.new(1,-51,0.5,-10),
+            BackgroundColor3=COLORS.ToggleOff, BorderSizePixel=0,
         })
         corner(track,10)
-
         local knob = make("Frame", {
-            Parent = track,
-            Size = UDim2.fromOffset(18,18),
-            Position = UDim2.new(0,1,0.5,-9),
-            BackgroundColor3 = COLORS.Knob,
-            BorderSizePixel = 0,
+            Parent=track, Size=UDim2.fromOffset(18,18), Position=UDim2.new(0,1,0.5,-9),
+            BackgroundColor3=COLORS.Knob, BorderSizePixel=0,
         })
         corner(knob,9)
-
-        mod.UI.Track = track
-        mod.UI.Knob = knob
-
+        mod.UI.Track, mod.UI.Knob = track, knob
         local hit = make("TextButton", {
-            Parent = row,
-            Size = UDim2.fromOffset(70,SIZE.Row),
-            Position = UDim2.new(1,-75,0,0),
-            BackgroundTransparency = 1,
-            BorderSizePixel = 0,
-            Text = "",
-            AutoButtonColor = false,
-            Modal = false,
+            Parent=row, Size=UDim2.fromOffset(70,SIZE.Row), Position=UDim2.new(1,-75,0,0),
+            BackgroundTransparency=1, BorderSizePixel=0, Text="", AutoButtonColor=false,
         })
-
         table.insert(mod._connections, hit.MouseButton1Click:Connect(function()
             self:_setToggleState(mod, not mod.Enabled)
         end))
-
         self:_toggleVisual(mod)
+
+    elseif typ == "slider" then
+        local p = mod.Params
+        local minValue, maxValue, step = p.Min, p.Max, p.Step
+        local slider = make("Frame", {
+            Parent=row, Size=UDim2.fromOffset(110,24), Position=UDim2.new(1,-121,0.5,-12),
+            BackgroundTransparency=1, BorderSizePixel=0,
+        })
+        local bar = make("Frame", {
+            Parent=slider, Size=UDim2.new(1,0,0,4), Position=UDim2.new(0,0,0.5,-2),
+            BackgroundColor3=COLORS.ToggleOff, BorderSizePixel=0,
+        })
+        corner(bar,2)
+        local fill = make("Frame", {
+            Parent=bar, Size=UDim2.new(0,0,1,0), BackgroundColor3=COLORS.Accent, BorderSizePixel=0,
+        })
+        corner(fill,2)
+        local knob = make("Frame", {
+            Parent=slider, Size=UDim2.fromOffset(10,10), AnchorPoint=Vector2.new(0.5,0.5),
+            BackgroundColor3=COLORS.Knob, BorderSizePixel=0,
+        })
+        corner(knob,5)
+        local hit = make("TextButton", {
+            Parent=slider, Size=UDim2.new(1,0,1,0), BackgroundTransparency=1,
+            BorderSizePixel=0, Text="", AutoButtonColor=false,
+        })
+
+        local function render()
+            local alpha = maxValue > minValue and math.clamp((mod.Value-minValue)/(maxValue-minValue),0,1) or 0
+            fill.Size = UDim2.new(alpha,0,1,0)
+            knob.Position = UDim2.new(alpha,0,0.5,0)
+        end
+        local function setValue(x)
+            local width = math.max(slider.AbsoluteSize.X,1)
+            local alpha = math.clamp((x-slider.AbsolutePosition.X)/width,0,1)
+            local raw = minValue+(maxValue-minValue)*alpha
+            mod.Value = math.clamp(minValue+math.round((raw-minValue)/step)*step,minValue,maxValue)
+            render()
+            self:_fire(mod,mod.Value)
+        end
+        local dragging = false
+        table.insert(mod._connections, hit.MouseButton1Down:Connect(function()
+            dragging=true
+            setValue(UserInputService:GetMouseLocation().X)
+        end))
+        table.insert(mod._connections, UserInputService.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then setValue(input.Position.X) end
+        end))
+        table.insert(mod._connections, UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging=false end
+        end))
+        mod.UI.Slider,mod.UI.Fill,mod.UI.Knob=slider,fill,knob
+        render()
 
     elseif typ == "select" or typ == "dropdown" then
         local box = make("TextButton", {
-            Parent = row,
-            Size = UDim2.fromOffset(110,24),
-            Position = UDim2.new(1,-121,0.5,-12),
-            BackgroundColor3 = COLORS.Selected,
-            BorderSizePixel = 0,
-            TextColor3 = COLORS.Text,
-            Font = Enum.Font.Gotham,
-            TextSize = 10,
-            AutoButtonColor = false,
-            Text = tostring(mod.Value or mod.Options[1] or "Select"),
+            Parent=row, Size=UDim2.fromOffset(110,24), Position=UDim2.new(1,-121,0.5,-12),
+            BackgroundColor3=COLORS.Selected, BorderSizePixel=0, TextColor3=COLORS.Text,
+            Font=Enum.Font.Gotham, TextSize=10, AutoButtonColor=false,
+            Text=tostring(mod.Value or "Select"),
         })
-        corner(box,4)
-        stroke(box, COLORS.Border, 1, 0.55)
-        mod.UI.Box = box
-
-        local idx = 1
-        for i,opt in ipairs(mod.Options) do
-            if opt == mod.Value then idx = i break end
-        end
-        table.insert(mod._connections, box.MouseButton1Click:Connect(function()
-            if #mod.Options == 0 then return end
-            idx = idx % #mod.Options + 1
-            mod.Value = mod.Options[idx]
-            box.Text = tostring(mod.Value)
-            self:_fire(mod, mod.Value)
+        corner(box,4); stroke(box,COLORS.Border,1,0.55); mod.UI.Box=box
+        local index=1
+        for i,opt in ipairs(mod.Options) do if opt==mod.Value then index=i break end end
+        table.insert(mod._connections,box.MouseButton1Click:Connect(function()
+            if #mod.Options==0 then return end
+            index=index%#mod.Options+1
+            mod.Value=mod.Options[index]
+            box.Text=tostring(mod.Value)
+            self:_fire(mod,mod.Value)
         end))
 
     elseif typ == "input" or typ == "textbox" then
         local box = make("TextBox", {
-            Parent = row,
-            Size = UDim2.fromOffset(110,24),
-            Position = UDim2.new(1,-121,0.5,-12),
-            BackgroundColor3 = COLORS.Selected,
-            BorderSizePixel = 0,
-            TextColor3 = COLORS.Text,
-            PlaceholderColor3 = COLORS.Text3,
-            Font = Enum.Font.Gotham,
-            TextSize = 10,
-            ClearTextOnFocus = false,
-            Text = tostring(mod.Value or ""),
-            PlaceholderText = tostring(mod.Placeholder or "Value"),
+            Parent=row, Size=UDim2.fromOffset(110,24), Position=UDim2.new(1,-121,0.5,-12),
+            BackgroundColor3=COLORS.Selected, BorderSizePixel=0, TextColor3=COLORS.Text,
+            PlaceholderColor3=COLORS.Text3, Font=Enum.Font.Gotham, TextSize=10,
+            ClearTextOnFocus=false, Text=tostring(mod.Value or ""),
+            PlaceholderText=tostring(mod.Params.Placeholder or "Value"),
         })
-        corner(box,4)
-        stroke(box, COLORS.Border, 1, 0.55)
-        mod.UI.Box = box
-
-        table.insert(mod._connections, box.FocusLost:Connect(function(enterPressed)
-            mod.Value = box.Text
-            if enterPressed then self:_fire(mod, box.Text) end
+        corner(box,4); stroke(box,COLORS.Border,1,0.55); mod.UI.Box=box
+        table.insert(mod._connections,box.FocusLost:Connect(function(enterPressed)
+            mod.Value=box.Text
+            if enterPressed then self:_fire(mod,box.Text) end
         end))
 
     else
         local button = make("TextButton", {
-            Parent = row,
-            Size = UDim2.fromOffset(110,24),
-            Position = UDim2.new(1,-121,0.5,-12),
-            BackgroundColor3 = COLORS.Selected,
-            BorderSizePixel = 0,
-            Text = tostring(mod.ButtonText or "Execute"),
-            TextColor3 = COLORS.Text,
-            Font = Enum.Font.Gotham,
-            TextSize = 10,
-            AutoButtonColor = false,
+            Parent=row, Size=UDim2.fromOffset(110,24), Position=UDim2.new(1,-121,0.5,-12),
+            BackgroundColor3=COLORS.Selected, BorderSizePixel=0,
+            Text=tostring(mod.Params.ButtonText or mod.ButtonText or "Execute"),
+            TextColor3=COLORS.Text, Font=Enum.Font.Gotham, TextSize=10, AutoButtonColor=false,
         })
-        corner(button,4)
-        stroke(button, COLORS.Border, 1, 0.55)
-        mod.UI.Button = button
-
-        table.insert(mod._connections, button.MouseButton1Click:Connect(function()
-            self:_fire(mod)
-        end))
+        corner(button,4); stroke(button,COLORS.Border,1,0.55); mod.UI.Button=button
+        table.insert(mod._connections,button.MouseButton1Click:Connect(function() self:_fire(mod,mod.Value) end))
     end
 
     return row
@@ -621,301 +466,123 @@ end
 
 function Builder:_clearContent()
     if not self.Content then return end
-    for _,obj in ipairs(self.Content:GetChildren()) do
-        if obj:GetAttribute("SBContent") then
-            obj:Destroy()
-        end
+    for _, object in ipairs(self.Content:GetChildren()) do
+        if object:GetAttribute("SBContent") then object:Destroy() end
     end
-
-    for _,mod in pairs(self.Modules) do
-        mod.UI = {}
-        mod._connections = {}
+    for _, mod in pairs(self.Modules) do
+        mod.UI={}
+        mod._connections={}
     end
 end
 
 function Builder:_showCategory(category)
     if not self.Content then return end
-    self.ActiveCategory = category
+    self.ActiveCategory=category
     self:_clearContent()
-
-    local list = self.CategoryMap[category] or {}
-    local grouped = {}
-    local ungrouped = {}
-    local groupOrder = {}
-
+    local list=self.CategoryMap[category] or {}
+    local grouped, ungrouped, orderGroups={},{},{}
     for _,mod in ipairs(list) do
-        local sub = trim(mod.Subcategory)
-        if sub == "" then
-            table.insert(ungrouped, mod)
-        else
-            if not grouped[sub] then
-                grouped[sub] = {}
-                table.insert(groupOrder, sub)
-            end
-            table.insert(grouped[sub], mod)
+        local sub=trim(mod.Subcategory)
+        if sub=="" then table.insert(ungrouped,mod) else
+            if not grouped[sub] then grouped[sub]={}; table.insert(orderGroups,sub) end
+            table.insert(grouped[sub],mod)
         end
     end
-
-    table.sort(groupOrder, function(a,b) return a:lower() < b:lower() end)
-    table.sort(ungrouped, function(a,b) return a.Name:lower() < b.Name:lower() end)
-
-    local order = 1
-    for _,sub in ipairs(groupOrder) do
-        make("TextLabel", {
-            Parent = self.Content,
-            Size = UDim2.new(1,0,0,22),
-            BackgroundTransparency = 1,
-            Text = sub,
-            TextColor3 = COLORS.Text3,
-            Font = Enum.Font.GothamSemibold,
-            TextSize = 10,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            LayoutOrder = order,
-            Attribute = nil,
+    table.sort(orderGroups,function(a,b)return a:lower()<b:lower()end)
+    table.sort(ungrouped,function(a,b)return a.Name:lower()<b.Name:lower()end)
+    local order=1
+    for _,sub in ipairs(orderGroups) do
+        local label=make("TextLabel",{
+            Parent=self.Content,Size=UDim2.new(1,0,0,22),BackgroundTransparency=1,
+            Text=sub,TextColor3=COLORS.Text3,Font=Enum.Font.GothamSemibold,TextSize=10,
+            TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=order,
         })
-        local label = self.Content:GetChildren()[#self.Content:GetChildren()]
-        label:SetAttribute("SBContent", true)
-        order += 1
-
-        table.sort(grouped[sub], function(a,b) return a.Name:lower() < b.Name:lower() end)
-        for _,mod in ipairs(grouped[sub]) do
-            self:_makeRow(mod, self.Content, order)
-            order += 1
-        end
+        label:SetAttribute("SBContent",true); order+=1
+        table.sort(grouped[sub],function(a,b)return a.Name:lower()<b.Name:lower()end)
+        for _,mod in ipairs(grouped[sub]) do self:_makeRow(mod,self.Content,order);order+=1 end
     end
-
-    for _,mod in ipairs(ungrouped) do
-        self:_makeRow(mod, self.Content, order)
-        order += 1
-    end
+    for _,mod in ipairs(ungrouped) do self:_makeRow(mod,self.Content,order);order+=1 end
 end
 
 function Builder:BuildGui()
-    if self.Gui then
-        pcall(function() self.Gui:Destroy() end)
-    end
+    if self.Gui then pcall(function() self.Gui:Destroy() end) end
     disconnectAll(self._connections)
-    for _,mod in pairs(self.Modules) do
-        disconnectAll(mod._connections)
-    end
+    for _,mod in pairs(self.Modules) do disconnectAll(mod._connections) end
 
-    local gui = make("ScreenGui", {
-        Parent = PlayerGui,
-        Name = self.Name .. "_UI",
-        ResetOnSpawn = false,
-        IgnoreGuiInset = true,
-        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-        DisplayOrder = 9999,
+    local gui=make("ScreenGui",{
+        Parent=PlayerGui,Name=self.Name.."_UI",ResetOnSpawn=false,IgnoreGuiInset=true,
+        ZIndexBehavior=Enum.ZIndexBehavior.Sibling,DisplayOrder=9999,
     })
-
-    local root = make("Frame", {
-        Parent = gui,
-        Name = "Root",
-        Size = UDim2.fromOffset(SIZE.W,SIZE.H),
-        Position = UDim2.new(0.5,-SIZE.W/2,0.5,-SIZE.H/2),
-        BackgroundColor3 = COLORS.Outer,
-        BorderSizePixel = 0,
+    local root=make("Frame",{
+        Parent=gui,Name="Root",Size=UDim2.fromOffset(SIZE.W,SIZE.H),
+        Position=UDim2.new(0.5,-SIZE.W/2,0.5,-SIZE.H/2),BackgroundColor3=COLORS.Outer,BorderSizePixel=0,
     })
-    corner(root,6)
-    stroke(root, COLORS.Border, 1, 0.2)
-
-    local header = make("Frame", {
-        Parent = root,
-        Size = UDim2.new(1,0,0,SIZE.Header),
-        BackgroundColor3 = COLORS.Header,
-        BorderSizePixel = 0,
-    })
+    corner(root,6);stroke(root,COLORS.Border,1,0.2)
+    local header=make("Frame",{Parent=root,Size=UDim2.new(1,0,0,SIZE.Header),BackgroundColor3=COLORS.Header,BorderSizePixel=0})
     corner(header,6)
-
-    make("TextLabel", {
-        Parent = header,
-        BackgroundTransparency = 1,
-        Size = UDim2.new(1,-90,1,0),
-        Position = UDim2.fromOffset(15,0),
-        Text = self.Name,
-        TextColor3 = COLORS.Text,
-        Font = Enum.Font.GothamSemibold,
-        TextSize = 13,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        TextYAlignment = Enum.TextYAlignment.Center,
+    make("TextLabel",{
+        Parent=header,BackgroundTransparency=1,Size=UDim2.new(1,-90,1,0),Position=UDim2.fromOffset(15,0),
+        Text=self.Name,TextColor3=COLORS.Text,Font=Enum.Font.GothamSemibold,TextSize=13,
+        TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Center,
+    })
+    local close=make("TextButton",{
+        Parent=header,BackgroundTransparency=1,Size=UDim2.fromOffset(35,47),Position=UDim2.new(1,-35,0,0),
+        Text="×",TextColor3=COLORS.Text2,Font=Enum.Font.GothamBold,TextSize=19,AutoButtonColor=false,
+    })
+    local minimize=make("TextButton",{
+        Parent=header,BackgroundTransparency=1,Size=UDim2.fromOffset(35,47),Position=UDim2.new(1,-70,0,0),
+        Text="—",TextColor3=COLORS.Text2,Font=Enum.Font.GothamBold,TextSize=17,AutoButtonColor=false,
+    })
+    local body=make("Frame",{Parent=root,Position=UDim2.fromOffset(0,SIZE.Header),Size=UDim2.new(1,0,1,-SIZE.Header),BackgroundTransparency=1,BorderSizePixel=0})
+    local sidebar=make("Frame",{Parent=body,Size=UDim2.new(0,SIZE.Sidebar,1,0),BackgroundColor3=COLORS.Sidebar,BorderSizePixel=0})
+    local content=make("Frame",{Parent=body,Position=UDim2.fromOffset(SIZE.Sidebar,0),Size=UDim2.new(1,-SIZE.Sidebar,1,0),BackgroundColor3=COLORS.Content,BorderSizePixel=0})
+    make("UIListLayout",{Parent=sidebar,Padding=UDim.new(0,2),SortOrder=Enum.SortOrder.LayoutOrder})
+    make("UIPadding",{Parent=sidebar,PaddingTop=UDim.new(0,7),PaddingLeft=UDim.new(0,7),PaddingRight=UDim.new(0,7)})
+    make("UIListLayout",{Parent=content,Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
+    make("UIPadding",{Parent=content,PaddingTop=UDim.new(0,8),PaddingLeft=UDim.new(0,8),PaddingRight=UDim.new(0,8),PaddingBottom=UDim.new(0,8)})
+    local footer=make("TextLabel",{
+        Parent=root,AnchorPoint=Vector2.new(1,1),Position=UDim2.new(1,-8,1,-5),Size=UDim2.fromOffset(240,16),
+        BackgroundTransparency=1,Text=self.Status,TextColor3=COLORS.Text3,Font=Enum.Font.Gotham,TextSize=9,
+        TextXAlignment=Enum.TextXAlignment.Right,TextYAlignment=Enum.TextYAlignment.Center,ZIndex=10,
     })
 
-    local close = make("TextButton", {
-        Parent = header,
-        BackgroundTransparency = 1,
-        Size = UDim2.fromOffset(35,47),
-        Position = UDim2.new(1,-35,0,0),
-        Text = "×",
-        TextColor3 = COLORS.Text2,
-        Font = Enum.Font.GothamBold,
-        TextSize = 19,
-        AutoButtonColor = false,
-    })
+    self.Gui,self.Root,self.Content,self.Sidebar,self.Body,self.StatusLabel=gui,root,content,sidebar,body,footer
+    self._categoryButtons={}
 
-    local minimize = make("TextButton", {
-        Parent = header,
-        BackgroundTransparency = 1,
-        Size = UDim2.fromOffset(35,47),
-        Position = UDim2.new(1,-70,0,0),
-        Text = "—",
-        TextColor3 = COLORS.Text2,
-        Font = Enum.Font.GothamBold,
-        TextSize = 17,
-        AutoButtonColor = false,
-    })
-
-    local body = make("Frame", {
-        Parent = root,
-        Position = UDim2.fromOffset(0,SIZE.Header),
-        Size = UDim2.new(1,0,1,-SIZE.Header),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-    })
-
-    local sidebar = make("Frame", {
-        Parent = body,
-        Size = UDim2.new(0,SIZE.Sidebar,1,0),
-        BackgroundColor3 = COLORS.Sidebar,
-        BorderSizePixel = 0,
-    })
-
-    local content = make("Frame", {
-        Parent = body,
-        Position = UDim2.fromOffset(SIZE.Sidebar,0),
-        Size = UDim2.new(1,-SIZE.Sidebar,1,0),
-        BackgroundColor3 = COLORS.Content,
-        BorderSizePixel = 0,
-    })
-
-    local sideList = make("UIListLayout", {
-        Parent = sidebar,
-        Padding = UDim.new(0,2),
-        SortOrder = Enum.SortOrder.LayoutOrder,
-    })
-
-    make("UIPadding", {
-        Parent = sidebar,
-        PaddingTop = UDim.new(0,7),
-        PaddingLeft = UDim.new(0,7),
-        PaddingRight = UDim.new(0,7),
-    })
-
-    local contentList = make("UIListLayout", {
-        Parent = content,
-        Padding = UDim.new(0,5),
-        SortOrder = Enum.SortOrder.LayoutOrder,
-    })
-    make("UIPadding", {
-        Parent = content,
-        PaddingTop = UDim.new(0,8),
-        PaddingLeft = UDim.new(0,8),
-        PaddingRight = UDim.new(0,8),
-        PaddingBottom = UDim.new(0,8),
-    })
-
-    local footer = make("TextLabel", {
-        Parent = root,
-        AnchorPoint = Vector2.new(1,1),
-        Position = UDim2.new(1,-8,1,-5),
-        Size = UDim2.fromOffset(240,16),
-        BackgroundTransparency = 1,
-        Text = self.Status,
-        TextColor3 = COLORS.Text3,
-        Font = Enum.Font.Gotham,
-        TextSize = 9,
-        TextXAlignment = Enum.TextXAlignment.Right,
-        TextYAlignment = Enum.TextYAlignment.Center,
-        ZIndex = 10,
-    })
-
-    self.Gui = gui
-    self.Root = root
-    self.Content = content
-    self.Sidebar = sidebar
-    self.Body = body
-    self.StatusLabel = footer
-    self._categoryButtons = {}
-
-    for i,category in ipairs(self.Categories) do
-        local b = make("TextButton", {
-            Parent = sidebar,
-            Size = UDim2.new(1,0,0,32),
-            BackgroundColor3 = i == 1 and COLORS.Selected or COLORS.Sidebar,
-            BorderSizePixel = 0,
-            Text = category,
-            TextColor3 = i == 1 and COLORS.Text or COLORS.Text2,
-            Font = Enum.Font.Gotham,
-            TextSize = 10,
-            AutoButtonColor = false,
+    for index,category in ipairs(self.Categories) do
+        local button=make("TextButton",{
+            Parent=sidebar,Size=UDim2.new(1,0,0,32),BackgroundColor3=index==1 and COLORS.Selected or COLORS.Sidebar,
+            BorderSizePixel=0,Text=category,TextColor3=index==1 and COLORS.Text or COLORS.Text2,
+            Font=Enum.Font.Gotham,TextSize=10,AutoButtonColor=false,LayoutOrder=index,
         })
-        corner(b,4)
-        b.LayoutOrder = i
-        self._categoryButtons[category] = b
-
-        table.insert(self._connections, b.MouseEnter:Connect(function()
-            if self.ActiveCategory ~= category then
-                TweenService:Create(b, EASE, {BackgroundColor3 = COLORS.Hover}):Play()
-            end
-        end))
-        table.insert(self._connections, b.MouseLeave:Connect(function()
-            if self.ActiveCategory ~= category then
-                TweenService:Create(b, EASE, {BackgroundColor3 = COLORS.Sidebar}):Play()
-            end
-        end))
-        table.insert(self._connections, b.MouseButton1Click:Connect(function()
+        corner(button,4);self._categoryButtons[category]=button
+        table.insert(self._connections,button.MouseButton1Click:Connect(function()
             self:_showCategory(category)
-            for cat,btn in pairs(self._categoryButtons) do
-                TweenService:Create(btn, EASE, {
-                    BackgroundColor3 = cat == category and COLORS.Selected or COLORS.Sidebar,
-                    TextColor3 = cat == category and COLORS.Text or COLORS.Text2,
-                }):Play()
+            for cat,b in pairs(self._categoryButtons) do
+                TweenService:Create(b,EASE,{BackgroundColor3=cat==category and COLORS.Selected or COLORS.Sidebar,TextColor3=cat==category and COLORS.Text or COLORS.Text2}):Play()
             end
         end))
     end
+    if self.Categories[1] then self:_showCategory(self.Categories[1]) end
 
-    if self.Categories[1] then
-        self:_showCategory(self.Categories[1])
-    end
-
-    local dragging = false
-    local dragStart, startPos
-
-    table.insert(self._connections, header.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            dragStart = input.Position
-            startPos = root.Position
+    local dragging=false;local dragStart;local startPos
+    table.insert(self._connections,header.InputBegan:Connect(function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 then dragging=true;dragStart=input.Position;startPos=root.Position end
+    end))
+    table.insert(self._connections,UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType==Enum.UserInputType.MouseMovement then
+            local delta=input.Position-dragStart
+            root.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+delta.X,startPos.Y.Scale,startPos.Y.Offset+delta.Y)
         end
     end))
-
-    table.insert(self._connections, UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - dragStart
-            root.Position = UDim2.new(
-                startPos.X.Scale,
-                startPos.X.Offset + delta.X,
-                startPos.Y.Scale,
-                startPos.Y.Offset + delta.Y
-            )
-        end
+    table.insert(self._connections,UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
     end))
-
-    table.insert(self._connections, UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end))
-
-    table.insert(self._connections, close.MouseButton1Click:Connect(function()
-        self:Hide()
-    end))
-
-    table.insert(self._connections, minimize.MouseButton1Click:Connect(function()
-        self._minimized = not self._minimized
-        body.Visible = not self._minimized
-        root.Size = self._minimized
-            and UDim2.fromOffset(SIZE.W,SIZE.Header)
-            or UDim2.fromOffset(SIZE.W,SIZE.H)
+    table.insert(self._connections,close.MouseButton1Click:Connect(function() self:Hide() end))
+    table.insert(self._connections,minimize.MouseButton1Click:Connect(function()
+        self._minimized=not self._minimized
+        body.Visible=not self._minimized
+        root.Size=self._minimized and UDim2.fromOffset(SIZE.W,SIZE.Header) or UDim2.fromOffset(SIZE.W,SIZE.H)
     end))
 
     return self
@@ -923,14 +590,13 @@ end
 
 function Builder:Show()
     if not self.Gui then self:BuildGui() end
-    self.Gui.Enabled = true
-    self.Visible = true
+    self.Gui.Enabled=true;self.Visible=true
     return self
 end
 
 function Builder:Hide()
-    if self.Gui then self.Gui.Enabled = false end
-    self.Visible = false
+    if self.Gui then self.Gui.Enabled=false end
+    self.Visible=false
     return self
 end
 
@@ -939,23 +605,11 @@ function Builder:Toggle()
     return self:Show()
 end
 
-function Builder:FireModule(name, extra)
-    local mod = self.Modules[name]
-    if not mod then return false, "Module not found" end
-    return self:_invokeRemote(mod, extra)
-end
-
-function Builder:AddRemote(name, remote)
-    assert(name, "AddRemote: name is required")
-    self.Config.Remotes = self.Config.Remotes or {}
-    self.Config.Remotes[name] = remote
-    return remote
-end
-
-function Builder:AddRemoteSpy(callback)
-    assert(type(callback) == "function", "AddRemoteSpy expects a function")
-    self.Config.RemoteSpy = callback
-    return self
+function Builder:FireModule(name, value)
+    local mod=self.Modules[name]
+    if not mod then return false,"Module not found" end
+    if value~=nil then mod.Value=value end
+    return self:_execute(mod,mod.Value)
 end
 
 return Builder
