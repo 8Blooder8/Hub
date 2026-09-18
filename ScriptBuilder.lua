@@ -242,6 +242,9 @@ function Builder.New(name, config)
     self._minimized = false
     self._categoryButtons = {}
     self._pendingSelects = {}
+    self._queueModules = {}
+    self._queueCursor = 1
+    self._queueWorkerRunning = false
     return self
 end
 
@@ -252,6 +255,115 @@ end
 function Builder:_stopInterval(mod)
     mod._loopToken = (mod._loopToken or 0) + 1
     mod._loopRunning = false
+    mod._queueNextRun = nil
+end
+
+function Builder:_removeQueueModule(mod)
+    for index = #self._queueModules, 1, -1 do
+        if self._queueModules[index] == mod then
+            table.remove(self._queueModules, index)
+
+            if #self._queueModules == 0 then
+                self._queueCursor = 1
+            elseif self._queueCursor > #self._queueModules then
+                self._queueCursor = 1
+            end
+        end
+    end
+end
+
+function Builder:_hasQueuedWork()
+    for _, mod in ipairs(self._queueModules) do
+        if mod.Queue == true
+            and mod.Enabled == true
+            and tonumber(mod.Interval)
+            and tonumber(mod.Interval) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+function Builder:_startQueueWorker()
+    if self._queueWorkerRunning or not self:_hasQueuedWork() then
+        return
+    end
+
+    self._queueWorkerRunning = true
+
+    task.spawn(function()
+        while self:_hasQueuedWork() do
+            local queueSize = #self._queueModules
+            if queueSize == 0 then
+                break
+            end
+
+            local selectedModule = nil
+            local selectedIndex = nil
+
+            for offset = 0, queueSize - 1 do
+                local index = ((self._queueCursor - 1 + offset) % queueSize) + 1
+                local candidate = self._queueModules[index]
+
+                if candidate
+                    and candidate.Queue == true
+                    and candidate.Enabled == true
+                    and tonumber(candidate.Interval)
+                    and tonumber(candidate.Interval) > 0 then
+                    selectedModule = candidate
+                    selectedIndex = index
+                    break
+                end
+            end
+
+            if not selectedModule then
+                break
+            end
+
+            -- Pass the baton immediately so that the next turn belongs
+            -- to the next active queued module after this execution.
+            self._queueCursor = (selectedIndex % queueSize) + 1
+
+            local token = selectedModule._loopToken
+            local nextRun = tonumber(selectedModule._queueNextRun) or 0
+            local now = os.clock()
+
+            if nextRun > now then
+                task.wait(nextRun - now)
+            end
+
+            if selectedModule.Enabled
+                and selectedModule.Queue == true
+                and selectedModule._loopToken == token
+                and tonumber(selectedModule.Interval)
+                and tonumber(selectedModule.Interval) > 0 then
+
+                self:_execute(selectedModule, selectedModule.Value)
+
+                if selectedModule.Enabled and selectedModule._loopToken == token then
+                    selectedModule._queueNextRun = os.clock() + math.max(
+                        tonumber(selectedModule.Interval),
+                        MIN_INTERVAL
+                    )
+                    selectedModule._loopRunning = true
+                else
+                    selectedModule._queueNextRun = nil
+                    selectedModule._loopRunning = false
+                end
+            end
+        end
+
+        self._queueWorkerRunning = false
+
+        -- A toggle can be changed during the final worker iteration.
+        -- Re-check on the next scheduler cycle instead of creating
+        -- multiple concurrent queue workers.
+        if self:_hasQueuedWork() then
+            task.defer(function()
+                self:_startQueueWorker()
+            end)
+        end
+    end)
 end
 
 function Builder:_execute(mod, value)
@@ -277,6 +389,14 @@ function Builder:_startInterval(mod)
     end
 
     self:_stopInterval(mod)
+
+    if mod.Queue == true then
+        mod._queueNextRun = 0
+        mod._loopRunning = true
+        self:_startQueueWorker()
+        return
+    end
+
     interval = math.max(interval, MIN_INTERVAL)
     local token = mod._loopToken
     mod._loopRunning = true
@@ -389,6 +509,7 @@ function Builder:AddModule(def)
 
     if old then
         self:_stopInterval(old)
+        self:_removeQueueModule(old)
         disconnectAll(old._connections)
         local oldList = self.CategoryMap[old.Category]
         if oldList then
@@ -415,6 +536,7 @@ function Builder:AddModule(def)
     mod.Subcategory = trim(def.Subcategory or "")
     mod.Type = typ
     mod.Interval = tonumber(def.Interval)
+    mod.Queue = def.Queue == true
     mod.Params = params
     mod.Options = type(params.Options) == "table" and params.Options or {}
     mod.To = trim(def.To or "")
@@ -434,6 +556,7 @@ function Builder:AddModule(def)
     mod._connections = {}
     mod._loopToken = 0
     mod._loopRunning = false
+    mod._queueNextRun = nil
 
     if lowerType == "slider" then
         mod.Params.Min = tonumber(mod.Params.Min) or 0
@@ -469,6 +592,10 @@ function Builder:AddModule(def)
     end
     table.insert(self.CategoryMap[category], mod)
 
+    if mod.Queue == true then
+        table.insert(self._queueModules, mod)
+    end
+
     if self._pendingSelects[name] then
         local pending = self._pendingSelects[name]
         self:_applySelection(mod, pending.Name, pending.Value, pending.Source)
@@ -501,6 +628,7 @@ function Builder:RemoveModule(name)
     local mod = self.Modules[name]
     if not mod then return false end
     self:_stopInterval(mod)
+    self:_removeQueueModule(mod)
     disconnectAll(mod._connections)
     self.Modules[name] = nil
 
